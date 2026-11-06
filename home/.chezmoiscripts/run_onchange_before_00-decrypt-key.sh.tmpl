@@ -2,6 +2,6 @@
 # Новый мак: ключ age лежит в репо под паролем, спрашиваем пароль один раз (рецепт chezmoi)
 if [ ! -f "${HOME}/.config/age/key.txt" ]; then
     mkdir -p "${HOME}/.config/age"
-    chezmoi age decrypt --output "${HOME}/.config/age/key.txt" --passphrase "{{ .chezmoi.sourceDir }}/key.txt.age"
+    "{{ .chezmoi.executable }}" age decrypt --output "${HOME}/.config/age/key.txt" --passphrase "{{ .chezmoi.sourceDir }}/key.txt.age"
     chmod 600 "${HOME}/.config/age/key.txt"
 fi
