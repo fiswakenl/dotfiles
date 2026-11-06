@@ -17,7 +17,6 @@ Stop: короткий звук (не при маркере 🔊 — там св
   mnemo     — on (дефолт) | off: подмешивать мнемонику к реплике; mnemo.md при этом не трогается, вернуть — `notify.py mnemo`;
   style     — off (дефолт) | имя скилла (например call): UserPromptSubmit подмешивает к реплике правила стиля ответа из
               ~/.claude/skills/<имя>/SKILL.md (строки-пункты «- …» после шапки), вместо мнемоники; переключить — `notify.py style call|off`;
-  ping      — on (дефолт) | off: флаг «сессия ждёт тебя» для тика ping_tick.py (он зовёт обратно в iTerm); переключить — `notify.py ping [all]`;
   ding      — on (дефолт) | off: короткий звук (свой — файл ~/.claude/notify/ding.aiff; иначе системный «Glass», другой — env KLALI_DING=Pop, /System/Library/Sounds);
   audio     — off (дефолт) | on: озвучка пересказа на маке (edge-tts → sox), если ввод был меньше 120 с назад;
               независима от дзиня — могут звучать оба;
@@ -26,7 +25,7 @@ Stop: короткий звук (не при маркере 🔊 — там св
 Служебное — во временной папке системы: notify.pid (обрыв прошлой озвучки). Лога нет — ошибки в stderr.
 Из терминала (проект — текущая папка): `notify.py show` — итоговые настройки;
 `notify.py voice` / `notify.py voice all` — переключить audio проекта / глобально и оборвать текущую озвучку;
-`notify.py mnemo|push|ping [all]` — так же переключают мнемонику, пуши и тик.
+`notify.py mnemo|push [all]` — так же переключают мнемонику и пуши.
 Пуши выключены, пока есть ~/.claude/push.off (звук остаётся).
 Ключи: ~/.config/bark.env (BARK_KEY), ~/.config/bf.env (BF_TOKEN - текст пуша кладётся на сервер bf, айди в конце заголовка через « · »), ~/.config/gemini.env (GEMINI_API_KEY, GEMINI_PROXY), ~/.config/openai.env,
 dnk/.env.spokenly (GROQ_*; Groq — через прокси dev из env ~/.claude/settings.json).
@@ -57,7 +56,7 @@ API = "https://generativelanguage.googleapis.com/v1beta/models/"
 TTS = "http://devml4dbs.duckdns.org:8767"  # озвучка для iPhone на dnk: POST /say, MP3 — /last.mp3
 PLAY = shutil.which("play") or "/opt/homebrew/bin/play"  # у хука может не быть Homebrew в PATH
 GLOBAL = HOME / ".claude/notify"  # глобальные настройки; проектные — <проект>/.claude/notify
-DEFAULTS = {"ding": "on", "audio": "off", "push": "on", "mnemo": "on", "ping": "on", "style": "off", "model": "groq"}
+DEFAULTS = {"ding": "on", "audio": "off", "push": "on", "mnemo": "on", "style": "off", "model": "groq"}
 TMP = pathlib.Path(tempfile.gettempdir())  # служебное хука — вне репозиториев и ~/.claude
 AUDIO_PID = TMP / "notify.pid"  # группа процессов текущей озвучки — динамик на маке один на все проекты
 
@@ -72,7 +71,7 @@ def setting(root: pathlib.Path, name: str) -> str:
     return f.read_text().strip().lower() if f else DEFAULTS[name]
 
 
-SWITCH = {"voice": ("audio", "озвучка на маке"), "mnemo": ("mnemo", "мнемоника"), "push": ("push", "пуши на телефон"), "ping": ("ping", "тик «вернись в терминал»")}
+SWITCH = {"voice": ("audio", "озвучка на маке"), "mnemo": ("mnemo", "мнемоника"), "push": ("push", "пуши на телефон")}
 
 
 def cli(args: list[str]):
@@ -125,22 +124,6 @@ MNEMO_FORMAT = """Начни последнее сообщение хода (т�
 
 if setting_file(root, "off"):
     sys.exit(0)
-
-PING = HOME / ".claude/ping"
-FLAG = PING / f"session-{hook.get('session_id', 'x')}"  # сессия ждёт тебя — пока файл есть, ping_tick.py зовёт обратно в iTerm
-if event == "UserPromptSubmit":
-    # реплика в любой сессии — ты вернулся: гасим напоминалку целиком, а не только флаг этой сессии (иначе чужой, брошенный флаг держит тик)
-    gone = [f.name for f in PING.glob("session-*")]
-    for f in PING.glob("session-*"):
-        f.unlink(missing_ok=True)
-    (PING / "state.json").unlink(missing_ok=True)
-    if gone:
-        with (PING / "ping.log").open("a") as log:
-            log.write(f"{time.strftime('%H:%M:%S')} реплика ({project}): сняты флаги {len(gone)}\n")
-elif event == "Stop" or (event == "Notification" and hook.get("notification_type") == "permission_prompt"):
-    if setting(root, "ping") == "on":
-        PING.mkdir(parents=True, exist_ok=True)
-        FLAG.write_text(project)
 
 if event == "UserPromptSubmit":  # есть mnemo.md — подмешиваем к реплике: Claude Code добавляет вывод хука в контекст
     style = setting(root, "style")
