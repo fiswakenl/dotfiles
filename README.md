@@ -11,7 +11,7 @@ chezmoi init --apply fiswakenl
 Если chezmoi ещё не установлен:
 
 ```sh
-sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply fiswakenl
+sh -c "$(curl -fsLS get.chezmoi.io/lb)" -- init --apply fiswakenl
 ```
 
 ## Каждый день
