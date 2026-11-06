@@ -1,4 +1,4 @@
 [[mgr.prepend_keymap]]
 on   = "C"
-run  = 'shell -- cat %h | pbcopy'
-desc = "Copy hovered file contents to clipboard"
+run  = 'shell -- cat %s | pbcopy'
+desc = "Copy file contents to clipboard"
