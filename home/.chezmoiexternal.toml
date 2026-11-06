@@ -1,0 +1,5 @@
+# oh-my-zsh: на новой машине клонируется, на старой раз в неделю подтягивается
+[".oh-my-zsh"]
+    type = "git-repo"
+    url = "https://github.com/ohmyzsh/ohmyzsh.git"
+    refreshPeriod = "168h"

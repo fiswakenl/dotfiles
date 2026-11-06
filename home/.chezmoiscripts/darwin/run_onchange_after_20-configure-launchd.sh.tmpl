@@ -1,0 +1,12 @@
+#!/bin/sh
+# launchd не любит ссылки, поэтому plist — копии; перезапускаем только изменённые службы.
+{{ range (glob (joinPath .chezmoi.sourceDir "private_Library/private_LaunchAgents/*.tmpl")) -}}
+# {{ base . }}: {{ include . | sha256sum }}
+{{ end -}}
+stamps="${HOME}/.local/state/dotfiles/launchd"; mkdir -p "$stamps"
+for name in {{ range (glob (joinPath .chezmoi.sourceDir "private_Library/private_LaunchAgents/*.tmpl")) }}{{ base . | trimSuffix ".tmpl" }} {{ end }}; do
+    f="${HOME}/Library/LaunchAgents/$name"; label="${name%.plist}"
+    cmp -s "$f" "$stamps/$name" && launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 && continue
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$f" && cp "$f" "$stamps/$name" && echo "  $label перезапущен"
+done

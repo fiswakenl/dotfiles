@@ -1,0 +1,9 @@
+key.txt.age
+
+# сессии и память Claude не синхронизируем
+.claude/projects
+
+{{ if ne .chezmoi.os "darwin" }}
+.chezmoiscripts/darwin/**
+Library
+{{ end }}

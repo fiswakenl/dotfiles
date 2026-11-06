@@ -1,0 +1,5 @@
+.DS_Store
+*.bak
+__pycache__/
+*.bak-*
+claude/skills/synced/

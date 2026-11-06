@@ -1,0 +1,21 @@
+# Environment
+export ZSH="$HOME/.oh-my-zsh"
+# свои *.zsh — в ~/.config/zsh (dotfiles), сам oh-my-zsh ставит chezmoi
+export ZSH_CUSTOM="$HOME/.config/zsh"
+typeset -U path
+path=("$HOME/.local/bin" $path)
+export PATH
+ulimit -n 65536
+
+# Shell behavior: resolve symlinks when changing directories.
+setopt CHASE_LINKS
+
+# Oh My Zsh
+ZSH_THEME="robbyrussell"
+plugins=(git)
+
+# Also loads personal configuration from $ZSH_CUSTOM/*.zsh:
+#   20-projects.zsh — Claude and project commands
+#   30-iterm.zsh    — iTerm colors by directory
+source "$ZSH/oh-my-zsh.sh"
+

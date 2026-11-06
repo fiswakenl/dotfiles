@@ -1,0 +1,4 @@
+#!/bin/sh
+# Brewfile: {{ include (joinPath .chezmoi.workingTree "Brewfile") | sha256sum }}
+eval "$(/opt/homebrew/bin/brew shellenv)"  # на свежем маке brew ещё нет в PATH
+brew bundle --no-upgrade --file="{{ .chezmoi.workingTree }}/Brewfile"

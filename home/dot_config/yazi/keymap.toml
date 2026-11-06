@@ -1,0 +1,4 @@
+[[mgr.prepend_keymap]]
+on   = ["c", "t"]
+run  = 'shell -- cat %s | pbcopy'
+desc = "Copy file contents to clipboard"

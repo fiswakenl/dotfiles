@@ -1,0 +1,13 @@
+sourceDir = {{ .chezmoi.workingTree | quote }}
+encryption = "age"
+# обычные конфиги — ссылками в репо (правки сразу в git); секреты, приватное и исполняемое — копиями
+mode = "symlink"
+
+[age]
+    identity = "~/.config/age/key.txt"
+    recipient = "age1unuvf997l6f4cwg28c6r2kltsn4z4a8rg8lje64f3528uvqrxptsyzuzfx"
+
+[git]
+    # chezmoi add / re-add / edit сами коммитят и пушат
+    autoCommit = true
+    autoPush = true
