@@ -38,7 +38,8 @@ chezmoi source-path <файл>                  # точный файл в ре�
 git -C ~/dotfiles add -A && git -C ~/dotfiles commit -m "<что поменял>" && git -C ~/dotfiles push
 ```
 
-**Копия** — правь на месте, затем одна команда; она сама зашифрует, закоммитит и запушит (`autoCommit`/`autoPush`):
+**Копия** — правь на месте и сразу забери в репо, до любого `apply`: `apply --force` молча вернёт старую версию из репо.
+Одна команда сама зашифрует, закоммитит и запушит (`autoCommit`/`autoPush`):
 
 ```sh
 chezmoi re-add <файл>
