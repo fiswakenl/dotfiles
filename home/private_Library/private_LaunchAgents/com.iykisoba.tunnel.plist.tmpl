@@ -5,7 +5,7 @@
 	<key>KeepAlive</key>
 	<true/>
 	<key>Label</key>
-	<string>local.ai-proxy-tunnel</string>
+	<string>com.iykisoba.tunnel</string>
 	<key>ProcessType</key>
 	<string>Background</string>
 	<key>ProgramArguments</key>
@@ -30,18 +30,18 @@
 		<string>127.0.0.1:1080:127.0.0.1:1080</string>
 		<string>-R</string>
 		<string>127.0.0.1:51090:127.0.0.1:51090</string>
+		<string>-R</string>
+		<string>127.0.0.1:51089:127.0.0.1:51089</string>
 		<string>-L</string>
 		<string>127.0.0.1:18444:127.0.0.1:8444</string>
-		<string>-L</string>
-		<string>127.0.0.1:28443:185.72.11.25:8443</string>
-		<string>dev</string>
+		<string>dnk</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
-	<string>{{ .chezmoi.homeDir }}/Library/Logs/ai-proxy-tunnel/stderr.log</string>
+	<string>{{ .chezmoi.homeDir }}/Library/Logs/tunnel/stderr.log</string>
 	<key>StandardOutPath</key>
-	<string>{{ .chezmoi.homeDir }}/Library/Logs/ai-proxy-tunnel/stdout.log</string>
+	<string>{{ .chezmoi.homeDir }}/Library/Logs/tunnel/stdout.log</string>
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 </dict>
