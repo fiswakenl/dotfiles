@@ -27,7 +27,7 @@ Stop: короткий звук (не при маркере 🔊 — там св
 `notify.py voice` / `notify.py voice all` — переключить audio проекта / глобально и оборвать текущую озвучку;
 `notify.py mnemo|push [all]` — так же переключают мнемонику и пуши.
 Пуши выключены, пока есть ~/.claude/push.off (звук остаётся).
-Ключи: ~/.config/bark.env (BARK_KEY), ~/.config/bf.env (BF_TOKEN - текст пуша кладётся на сервер bf, айди в конце заголовка через « · »), ~/.config/gemini.env (GEMINI_API_KEY, GEMINI_PROXY), ~/.config/openai.env,
+Ключи: ~/.config/bark.env (BARK_KEY), ~/.config/gemini.env (GEMINI_API_KEY, GEMINI_PROXY), ~/.config/openai.env,
 dnk/.env.spokenly (GROQ_*; Groq — через прокси dev из env ~/.claude/settings.json).
 """
 import base64
@@ -174,27 +174,12 @@ def say(line: str):
         pass
 
 
-def bf_id(text: str) -> str | None:
-    """Текст на сервер bf (dnk) → айди: озвучка на iPhone забирает по нему полный текст, без обрезки iOS."""
-    try:
-        token = dict(l.strip().split("=", 1) for l in open(HOME / ".config/bf.env") if "=" in l)["BF_TOKEN"]
-        return urllib.request.urlopen(urllib.request.Request(
-            "https://bf.devml4dbs.duckdns.org/", data=text.encode(),
-            headers={"Authorization": f"Bearer {token}"}), timeout=10).read().decode()
-    except Exception as e:
-        say(f"bf: {e}")
-        return None
-
-
 def bark(body: str):
     try:
         key = dict(l.strip().split("=", 1) for l in open(HOME / ".config/bark.env") if "=" in l)["BARK_KEY"]
-        # Айди - в конце заголовка через « · »: заголовок iOS отдаёт автоматизации целиком,
-        # там его отделяет «Разбить текст» по « · » (в адрес целый заголовок не годится - режется на пробеле).
-        i = bf_id(body)
-        # В пуш - начало: у APNs предел ~4 КБ, целиком текст лежит на сервере bf.
-        short = body if not i or len(body) <= 1000 else body[:1000].rstrip() + "…"
-        push = {"device_key": key, "title": f"{project} · {i}" if i else project, "body": short, "group": project}
+        # В пуш - начало: у APNs предел ~4 КБ
+        short = body if len(body) <= 1000 else body[:1000].rstrip() + "…"
+        push = {"device_key": key, "title": project, "body": short, "group": project}
         urllib.request.urlopen(urllib.request.Request(
             "https://api.day.app/push", headers={"Content-Type": "application/json"},
             data=json.dumps(push, ensure_ascii=False).encode()), timeout=10)
