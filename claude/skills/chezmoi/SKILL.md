@@ -14,7 +14,7 @@ description: ОБЯЗАТЕЛЬНО звать ДО любой правки, git
 
 Эта машина (ОС решает, что раскладывается — раздел 5):
 
-!`chezmoi --no-pager data --format json 2>/dev/null | jq -c '{os: .chezmoi.os, arch: .chezmoi.arch, host: .chezmoi.hostname, source: .chezmoi.sourceDir}' 2>/dev/null || echo "нет данных"`
+!`chezmoi execute-template 'os={{ .chezmoi.os }} arch={{ .chezmoi.arch }} host={{ .chezmoi.hostname }} source={{ .chezmoi.sourceDir }}' 2>&1`
 
 Команды установленной версии — опирайся на них, а не на память:
 
