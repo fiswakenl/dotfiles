@@ -41,8 +41,7 @@ chezmoi source-path <файл>                  # точный файл в ре�
 | `encrypted_`, `private_`, `executable_`, `.tmpl` | отдельный файл | **копия** |
 
 Примеры: `dot_config/yazi/keymap.toml` — ссылка; `dot_config/encrypted_private_openai.env.age`,
-`private_dot_ssh/encrypted_private_config.age`, `private_dot_claude/encrypted_CLAUDE.md.age`,
-`dot_local/bin/executable_netwatch.sh` — копии.
+`private_dot_ssh/encrypted_private_config.age`, `private_dot_claude/encrypted_CLAUDE.md.age` — копии.
 
 ## 2. Сохрани по типу
 
