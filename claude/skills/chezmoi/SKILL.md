@@ -12,6 +12,16 @@ description: ОБЯЗАТЕЛЬНО звать ДО любой правки, git
 
 !`chezmoi --no-pager status 2>&1 | head -20 || echo "chezmoi недоступен"`
 
+Эта машина (ОС решает, что раскладывается — раздел 5):
+
+!`chezmoi --no-pager data --format json 2>/dev/null | jq -c '{os: .chezmoi.os, arch: .chezmoi.arch, host: .chezmoi.hostname, source: .chezmoi.sourceDir}' 2>/dev/null || echo "нет данных"`
+
+Команды установленной версии — опирайся на них, а не на память:
+
+!`chezmoi help 2>&1 | sed -n '/^Daily commands:/,/^Template commands:/p'`
+
+Quick Start из документации, если нужен с нуля: https://raw.githubusercontent.com/twpayne/chezmoi/master/assets/chezmoi.io/docs/quick-start.md
+
 ## 1. Найди источник и тип файла
 
 ```sh
