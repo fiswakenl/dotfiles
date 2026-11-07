@@ -1,6 +1,6 @@
 ---
-name: chezmoi
-description: Схема работы с dotfiles на chezmoi (~/dotfiles, github.com/fiswakenl/dotfiles). Звать при любой правке конфига, который лежит в dotfiles — ~/.zshrc, ~/.config/**, ~/.ssh/config, ~/.config/*.env, ~/.claude (CLAUDE.md, settings, скиллы, хуки, команды), ~/.local/bin, launchd-службы, Brewfile, — и на «добавь в dotfiles», «закоммить конфиг», «перенеси на сервер», «синхронизируй настройки», «chezmoi». Глобальный, работает из любой папки.
+name: dotfiles
+description: Канон для настроек и служб — декларативно, через источник ~/dotfiles/home (github.com/fiswakenl/dotfiles) и chezmoi apply; файлы в системе руками не правим. Звать ДО первой записи, ещё на этапе плана, когда задача трогает ~/.zshrc, ~/.config/**, ~/.config/*.env, ~/.ssh/config, ~/.claude (CLAUDE.md, settings, скиллы, хуки, команды), ~/.local/bin, Brewfile или launchd-службы — туннели, фоновые процессы, всё, что должно «подниматься и держаться само». Фразы: «сделай декларативно», «чтобы поднималось само», «добавь в dotfiles», «закоммить конфиг», «перенеси на сервер», «синхронизируй настройки», «chezmoi». Глобальный, работает из любой папки.
 ---
 
 # chezmoi: как править и сохранять настройки
