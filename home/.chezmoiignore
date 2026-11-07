@@ -6,4 +6,10 @@ key.txt.age
 {{ if ne .chezmoi.os "darwin" }}
 .chezmoiscripts/darwin/**
 Library
+# только мак: туннель и launchd, цвета iTerm
+.config/zsh/30-iterm.zsh
+.config/zsh/40-mac.zsh
+{{ end }}
+{{ if ne .chezmoi.os "linux" }}
+.chezmoiscripts/linux/**
 {{ end }}
