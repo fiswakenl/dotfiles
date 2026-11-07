@@ -73,7 +73,48 @@ git -C ~/dotfiles status -sb                   # main...origin/main — всё �
 ## 4. Другие машины
 
 На машине с chezmoi подтянуть изменения: `chezmoi update` (git pull + раскладка), на сервере — `ssh <хост> chezmoi update`.
-Новая машина — команда из `~/dotfiles/README.md`.
+Второй `update` подряд не должен ничего делать — так проверяется идемпотентность.
+Новая машина — команда из `~/dotfiles/README.md`; пароль от ключа age спрашивается один раз, дальше ключ лежит
+в `~/.config/age/key.txt`. Проверять холодный старт — на чистом тестовом пользователе сервера, не на живом.
+
+## 5. Мак и сервер: что общее, что своё
+
+Различие — по ОС (`.chezmoi.os`: `darwin` — мак, `linux` — сервер), четыре приёма:
+
+| Нужно | Как | Пример |
+|---|---|---|
+| файл только на одной ОС | `.chezmoiignore`, блок `{{ if ne .chezmoi.os "darwin" }}` — исключить НЕ на маке, блок `{{ if ne .chezmoi.os "linux" }}` — НЕ на Linux | `40-mac.zsh`, `30-iterm.zsh`, `Library` — только мак; `.config/gh/hosts.yml` — только Linux |
+| файл-копия с разными частями | шаблон `.tmpl` с `{{ if eq .chezmoi.os "darwin" }}` | plist'ы launchd |
+| файл-ссылка с разными частями | ветвление внутри самого файла (`[[ $OSTYPE == darwin* ]]` в zsh) — шаблон превратил бы ссылку в копию | `20-projects.zsh` |
+| программы | `.chezmoiscripts/darwin/` (Homebrew по `Brewfile`), `.chezmoiscripts/linux/` (`uv`, `yazi`, `gh` в `~/.local/bin`, без sudo) | |
+
+Блок в `.chezmoiignore` читается наоборот: в `{{ if ne .chezmoi.os "darwin" }}` лежит то, что НЕ ставится на маке.
+После правки исключений — `chezmoi --no-pager managed`/`ignored` на маке и на сервере: файл должен быть ровно там, где задуман.
+
+Не делай шаблоном то, что правят программы: `~/.claude/settings.json` (его пишет Claude), `.gitconfig`
+(его пишет `git config --global`) — они ссылки, шаблон сделал бы их копией, и правки перестали бы попадать в репо.
+Отличие по ОС в таких файлах — без путей: `!gh auth git-credential`, а не `/opt/homebrew/bin/gh`.
+
+GitHub: git ходит по https через токен `gh`. На маке токен в связке ключей, на Linux — `~/.config/gh/hosts.yml`
+из dotfiles (шифрованный, только Linux). Поэтому на новом сервере хватает пароля от ключа age.
+
+## 6. Команды chezmoi (проверены)
+
+| Задача | Команда |
+|---|---|
+| открыть исходник в редакторе (секрет расшифрует и зашифрует обратно) | `chezmoi edit <файл>`; `--apply` — сразу разложить, `--watch` — на каждое сохранение |
+| забрать в репо копию, поправленную на месте | `chezmoi re-add [файл]` |
+| взять новый файл | `chezmoi add [--encrypt] <файл>` |
+| сменить тип файла | `chezmoi chattr +template` / `+encrypted` / `+private <файл>` |
+| разложить / подтянуть с GitHub и разложить | `chezmoi apply` / `chezmoi update` |
+| что расходится | `chezmoi --no-pager status`, `chezmoi --no-pager diff --exclude encrypted` |
+| слить, если поменялось и тут, и в репо | `chezmoi merge <файл>` |
+| перестать управлять / удалить с исходником | `chezmoi forget --force` / `chezmoi destroy --force` |
+| что под управлением / вне / исключено на этой ОС | `chezmoi --no-pager managed` / `unmanaged` / `ignored` |
+| переменные шаблонов (`os`, `arch`, `hostname`…) | `chezmoi --no-pager data` |
+| зайти в репо / git оттуда | `chezmoi cd` / `chezmoi git -- <команда>` |
+| проверка установки | `chezmoi --no-pager doctor` |
+| зашифровать / расшифровать вручную | `chezmoi encrypt` / `chezmoi decrypt <файл.age>` |
 
 ## Правила
 
@@ -81,7 +122,7 @@ git -C ~/dotfiles status -sb                   # main...origin/main — всё �
 - Расхождения смотри через `status`; `diff` — только `chezmoi --no-pager diff --exclude encrypted`, иначе он печатает
   расшифрованные секреты.
 - В открытые файлы пиши только то, что можно показать всем; ключи, токены и личные тексты — через `--encrypt`.
-- Мак-специфичное (launchd, Homebrew, `defaults`) клади в `home/.chezmoiscripts/darwin/` или под условие
+- Мак-специфичное (launchd, Homebrew, `defaults`) — по разделу 5: `home/.chezmoiscripts/darwin/`, исключение или условие
   `{{ if eq .chezmoi.os "darwin" }}`; пути — через `$HOME` или `{{ .chezmoi.homeDir }}`.
 - Пустые файлы chezmoi не раскладывает — оставь в нём хотя бы комментарий.
 - Память и сессии Claude (`~/.claude/projects`) в dotfiles не кладутся — они в `.chezmoiignore`.
