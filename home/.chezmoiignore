@@ -9,6 +9,8 @@ Library
 # только мак: туннель и launchd, цвета iTerm
 .config/zsh/30-iterm.zsh
 .config/zsh/40-mac.zsh
+# на маке gh держит токен в связке ключей; файл с токеном — только для Linux
+.config/gh/hosts.yml
 {{ end }}
 {{ if ne .chezmoi.os "linux" }}
 .chezmoiscripts/linux/**

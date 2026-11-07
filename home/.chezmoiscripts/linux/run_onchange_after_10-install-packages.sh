@@ -7,6 +7,15 @@ BIN="$HOME/.local/bin"; mkdir -p "$BIN"; PATH="$BIN:$PATH"
 # uv — Python-проекты и uv run
 command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
 
+# gh — вход git в GitHub (токен в ~/.config/gh/hosts.yml из dotfiles); на dnk уже стоит из apt
+if ! command -v gh >/dev/null 2>&1; then
+  tmp=$(mktemp -d)
+  v=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
+  curl -fsSL "https://github.com/cli/cli/releases/download/v$v/gh_${v}_linux_amd64.tar.gz" | tar -xz -C "$tmp"
+  install -m 755 "$tmp/gh_${v}_linux_amd64/bin/gh" "$BIN/"
+  rm -rf "$tmp"
+fi
+
 # yazi — файловый менеджер, конфиг общий с маком (~/.config/yazi)
 if ! command -v yazi >/dev/null 2>&1; then
   tmp=$(mktemp -d)
