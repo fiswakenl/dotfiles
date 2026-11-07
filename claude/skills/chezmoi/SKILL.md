@@ -5,8 +5,8 @@ description: ОБЯЗАТЕЛЬНО звать ДО любой правки, git
 
 # chezmoi: как править и сохранять настройки
 
-Репо `~/dotfiles` открытый, всё личное в нём шифруется `age`. Источник — `~/dotfiles/home`
-(`.chezmoiroot`), режим `symlink`: обычные конфиги в системе — ссылки в репо. Действуй по схеме сам, без уточнений.
+Репо dotfiles открытый, всё личное в нём шифруется `age`. Источник — `source` в строке машины ниже
+(на маке клон `~/dotfiles`, на сервере `~/.local/share/chezmoi`), режим `symlink`: обычные конфиги в системе — ссылки в репо. Действуй по схеме сам, без уточнений.
 
 Что сейчас расходится между репо и системой:
 
@@ -94,7 +94,7 @@ git -C ~/dotfiles status -sb                   # main...origin/main — всё �
 | Нужно | Как | Пример |
 |---|---|---|
 | файл только на одной ОС | `.chezmoiignore`, блок `{{ if ne .chezmoi.os "darwin" }}` — исключить НЕ на маке, блок `{{ if ne .chezmoi.os "linux" }}` — НЕ на Linux | `40-mac.zsh`, `30-iterm.zsh`, `Library` — только мак; `.config/gh/hosts.yml` — только Linux |
-| файл-копия с разными частями | шаблон `.tmpl` с `{{ if eq .chezmoi.os "darwin" }}` | plist'ы launchd |
+| файл-копия с разными частями | шаблон `.tmpl` с `{{ if eq .chezmoi.os "darwin" }}` | список шаблонов — вверху |
 | файл-ссылка с разными частями | ветвление внутри самого файла (`[[ $OSTYPE == darwin* ]]` в zsh) — шаблон превратил бы ссылку в копию | `20-projects.zsh` |
 | программы | `.chezmoiscripts/darwin/` (Homebrew по `Brewfile`), `.chezmoiscripts/linux/` (`uv`, `yazi`, `gh` в `~/.local/bin`, без sudo) | |
 
