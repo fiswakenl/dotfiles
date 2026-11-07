@@ -12,13 +12,17 @@ description: ОБЯЗАТЕЛЬНО звать ДО любой правки, git
 
 !`chezmoi --no-pager status 2>&1 | head -20 || echo "chezmoi недоступен"`
 
-Эта машина (ОС решает, что раскладывается — раздел 5):
+Эта машина — переменные, которые видят шаблоны (ОС решает, что раскладывается — раздел 5):
 
-!`chezmoi execute-template 'os={{ .chezmoi.os }} arch={{ .chezmoi.arch }} host={{ .chezmoi.hostname }} source={{ .chezmoi.sourceDir }}' 2>&1`
+!`chezmoi execute-template 'os={{ .chezmoi.os }} arch={{ .chezmoi.arch }} host={{ .chezmoi.hostname }} user={{ .chezmoi.username }} home={{ .chezmoi.homeDir }} source={{ .chezmoi.sourceDir }}' 2>&1`
 
-Команды установленной версии — опирайся на них, а не на память:
+Шаблоны в репо (`.tmpl` — копии, собираются под машину; ссылки шаблонами не делаем — раздел 5):
 
-!`chezmoi help 2>&1 | sed -n '/^Daily commands:/,/^Template commands:/p'`
+!`cd "$(chezmoi source-path 2>/dev/null)" 2>/dev/null && find . -name '*.tmpl' | sed 's|^\./||' | sort`
+
+Все команды установленной версии — опирайся на них, а не на память (подробно — `chezmoi help <команда>`):
+
+!`chezmoi help 2>&1 | sed -n '/^Documentation commands:/,/^Flags:/p' | grep -v '^Flags:'`
 
 Quick Start из документации, если нужен с нуля: https://raw.githubusercontent.com/twpayne/chezmoi/master/assets/chezmoi.io/docs/quick-start.md
 
