@@ -1,0 +1,5 @@
+# Читается всеми zsh, и ssh-командами без входа (`ssh dnk chezmoi update`): ~/.local/bin — в PATH всегда.
+# В .zshrc та же строка остаётся: на маке path_helper входа переставляет PATH после этого файла.
+typeset -U path
+path=("$HOME/.local/bin" $path)
+export PATH
