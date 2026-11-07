@@ -46,11 +46,7 @@ chezmoi source-path <файл>                  # точный файл в ре�
 
 ## 2. Сохрани по типу
 
-**Ссылка** — правь на месте (это и есть файл в репо), затем:
-
-```sh
-git -C ~/dotfiles add -A && git -C ~/dotfiles commit -m "<что поменял>" && git -C ~/dotfiles push
-```
+**Ссылка** — правь на месте (это и есть файл в репо), затем `chezmoi push`.
 
 **Копия** — правь на месте и сразу забери в репо, до любого `apply`: `apply --force` молча вернёт старую версию из репо.
 Одна команда сама зашифрует, закоммитит и запушит (`autoCommit`/`autoPush`):
@@ -112,24 +108,14 @@ git -C ~/dotfiles status -sb                   # main...origin/main — всё �
 GitHub: git ходит по https через токен `gh`. На маке токен в связке ключей, на Linux — `~/.config/gh/hosts.yml`
 из dotfiles (шифрованный, только Linux). Поэтому на новом сервере хватает пароля от ключа age.
 
-## 6. Команды chezmoi (проверены)
+## 6. Какой командой — по-нашему
 
-| Задача | Команда |
-|---|---|
-| открыть исходник в редакторе (секрет расшифрует и зашифрует обратно) | `chezmoi edit <файл>`; `--apply` — сразу разложить, `--watch` — на каждое сохранение |
-| забрать в репо копию, поправленную на месте | `chezmoi re-add [файл]` |
-| закоммитить и запушить всё изменённое в репо (правки ссылок) | `chezmoi push` |
-| взять новый файл | `chezmoi add [--encrypt] <файл>` |
-| сменить тип файла | `chezmoi chattr +template` / `+encrypted` / `+private <файл>` |
-| разложить / подтянуть с GitHub и разложить | `chezmoi apply` / `chezmoi update` |
-| что расходится | `chezmoi --no-pager status`, `chezmoi --no-pager diff --exclude encrypted` |
-| слить, если поменялось и тут, и в репо | `chezmoi merge <файл>` |
-| перестать управлять / удалить с исходником | `chezmoi forget --force` / `chezmoi destroy --force` |
-| что под управлением / вне / исключено на этой ОС | `chezmoi --no-pager managed` / `unmanaged` / `ignored` |
-| переменные шаблонов (`os`, `arch`, `hostname`…) | `chezmoi --no-pager data` |
-| зайти в репо / git оттуда | `chezmoi cd` / `chezmoi git -- <команда>` |
-| проверка установки | `chezmoi --no-pager doctor` |
-| зашифровать / расшифровать вручную | `chezmoi encrypt` / `chezmoi decrypt <файл.age>` |
+Полный список команд — живой, вверху. Здесь только то, что у нас решено:
+
+- ссылка поправлена → `chezmoi push` (add + commit + push всего изменённого);
+- копия поправлена на месте → `chezmoi re-add <файл>` (сам зашифрует, закоммитит, запушит);
+- секрет править → `chezmoi edit <файл>` (расшифрует и зашифрует обратно);
+- `diff` — только `chezmoi --no-pager diff --exclude encrypted`.
 
 ## Правила
 
