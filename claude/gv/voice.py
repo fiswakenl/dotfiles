@@ -67,7 +67,7 @@ WAIT_ANSWER = 900  # секунд Gemini ждёт ответа основной 
 viewers: set[web.WebSocketResponse] = set()  # открытые страницы-журналы
 history: list[dict] = []  # события журнала: новая или обновлённая страница получает их все
 HISTORY_KEEP = 1000
-S = {"after_tool": False, "pre_audio": bytearray(), "pre_text": [], "sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
+S = {"rec": None, "rec_t0": 0.0, "why": "закрыт сервером", "after_tool": False, "pre_audio": bytearray(), "pre_text": [], "sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
 
 TOOLS = [{"functionDeclarations": [{
     "name": "say_to_claude",
@@ -82,6 +82,8 @@ TOOLS = [{"functionDeclarations": [{
 
 LOG = Path.home() / ".claude" / "gv.log"
 LOG_KEEP = 2000
+SESSIONS = Path.home() / ".claude" / "gv-sessions"  # по файлу на каждое подключение сокета Gemini: шапка, весь диалог, итог
+SESSIONS_KEEP = 200
 _log_n = [0]
 
 
@@ -97,6 +99,30 @@ def log(kind: str, **data) -> None:
                 LOG.write_text("\n".join(lines[-LOG_KEEP:]) + "\n")
     except OSError:
         pass
+
+
+def rec(obj: dict) -> None:
+    """Строка в файл текущего подключения (если оно открыто)."""
+    f = S.get("rec")
+    if f:
+        try:
+            with f.open("a") as h:
+                h.write(json.dumps({"at": time.strftime("%H:%M:%S"), **obj}, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+
+def rec_open(**head) -> None:
+    try:
+        SESSIONS.mkdir(parents=True, exist_ok=True)
+        old = sorted(SESSIONS.glob("*.jsonl"))
+        for f in old[:-SESSIONS_KEEP]:
+            f.unlink()
+        S["rec"] = SESSIONS / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.jsonl"
+        S["rec_t0"] = time.monotonic()
+        rec({"connect": time.strftime("%Y-%m-%dT%H:%M:%S"), **head})
+    except OSError:
+        S["rec"] = None
 
 
 def gemini_env() -> dict:
@@ -118,6 +144,7 @@ async def emit(obj: dict) -> None:
     """Событие всем открытым журналам; и в историю, чтобы обновлённая страница не начинала с чистого листа."""
     history.append(obj)
     del history[:-HISTORY_KEEP]
+    rec(obj)
     for v in list(viewers):
         try:
             await v.send_json(obj)
@@ -193,6 +220,8 @@ async def ensure_live():
         S["live"] = g
         touch()
         log("gemini.open", model=MODEL, duplex=DUPLEX, pause_ms=PAUSE_MS)
+        S["why"] = "закрыт сервером"
+        rec_open(model=MODEL, duplex=DUPLEX, pause_ms=PAUSE_MS, prompt_chars=len(system_text()))
         asyncio.create_task(read(g))
         await emit({"state": "сокет Gemini открыт"})
         return g
@@ -264,9 +293,12 @@ async def read(g) -> None:
                 log("turn", audio_sent_bytes=S["sent"], audio_got_bytes=S["got"])
     except Exception as ex:  # noqa: BLE001
         log("gemini.error", error=f"{type(ex).__name__}: {ex}")
+        S["why"] = f"{type(ex).__name__}: {ex}"
         await emit({"error": f"Gemini: {type(ex).__name__}: {ex}"})
     finally:
         log("gemini.close", audio_sent_bytes=S["sent"], audio_got_bytes=S["got"])
+        rec({"close": S["why"], "seconds": round(time.monotonic() - S["rec_t0"]), "audio_sent_bytes": S["sent"], "audio_got_bytes": S["got"]})
+        S["rec"] = None
         if S["live"] is g:
             S["live"] = None
         await emit({"state": "сокет Gemini закрыт"})
