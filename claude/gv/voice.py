@@ -442,7 +442,7 @@ function connect(){
  ws.onopen=()=>st.textContent='журнал подключён · звук и микрофон — на компьютере';
  ws.onmessage=ev=>{const m=JSON.parse(ev.data);
   if(m.me)line('me','Вы: ',m.me);if(m.ai)line('ai','Gemini: ',m.ai);
-  if(m.ask)add('ask','→ Claude: '+m.ask);if(m.btwq)add('ask','⚡ /btw: '+m.btwq);if(m.btwa)add('ask','⚡ ← '+m.btwa);if(m.error)add('err',m.error);if(m.state)add('state','· '+m.state)};
+  if(m.ask)add('ask','→ Claude: '+m.ask);if(m.answer)add('ask','← Claude: '+m.answer);if(m.btwq)add('ask','⚡ /btw: '+m.btwq);if(m.btwa)add('ask','⚡ ← '+m.btwa);if(m.error)add('err',m.error);if(m.state)add('state','· '+m.state)};
  ws.onclose=()=>{st.textContent='сессия закрыта, жду новую…';setTimeout(connect,2000)};}
 connect();
 </script>"""
