@@ -443,12 +443,14 @@ async def quick_answer(request: web.Request) -> web.Response:
 
 
 async def quit_(_: web.Request) -> web.Response:
-    log("quit")
+    log("exit", why="/quit от плагина")
     asyncio.get_running_loop().call_later(0.3, lambda: os._exit(0))
     return web.Response(text="ok")
 
 
 async def ping(_: web.Request) -> web.Response:
+    if time.monotonic() - S["ping"] > 60:  # в журнал не чаще раза в минуту
+        log("ping", after_s=round(time.monotonic() - S["ping"]))
     S["ping"] = time.monotonic()
     return web.Response(text="ok")
 
@@ -462,7 +464,7 @@ async def guard(request: web.Request, handler):
 
 async def takeover(_: web.Request) -> web.Response:
     """Новая сессия просит уступить: выходим."""
-    log("takeover")
+    log("exit", why="/takeover: пришла другая сессия")
     asyncio.get_running_loop().call_later(0.3, lambda: os._exit(0))
     return web.Response(text="ok")
 
@@ -482,6 +484,7 @@ async def start(_: web.Application) -> None:
         while True:
             await asyncio.sleep(10)
             if time.monotonic() - S["ping"] > PING_LOST:
+                log("exit", why=f"плагин не пинговал {PING_LOST} с")
                 os._exit(0)
             if any(f.exists() and f.stat().st_mtime != stamp.get(f) for f in watched):  # код или инструкция изменились — перезапускаемся сами
                 log("reload")
