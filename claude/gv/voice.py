@@ -12,7 +12,7 @@ GV_DUPLEX=1 — слушать всегда (в наушниках).
 
 Gemini не отвечает от себя на рабочее: пересказывает слова человека функцией say_to_claude, ответ Claude приходит ей текстом.
 
-Ручки для плагина (127.0.0.1:8790), все с заголовком x-gv-token, если задан GV_TOKEN (кроме /, /ws, /takeover):
+Ручки для плагина (127.0.0.1:8790); хозяина сервиса определяет файл ~/.claude/gv.token, который проверяет плагин:
     GET  /next      вопрос для Claude {"id", "text"}; ждёт, пока он появится и Claude свободен; 204 — пока ничего
     POST /busy      {"busy": true|false} — Claude занят/свободен
     POST /answer    тело — ответ Claude текстом; Gemini озвучит
@@ -55,8 +55,6 @@ LOUD = 500  # уровень (RMS int16), с которого блок звук�
 PAUSE_MS = int(os.environ.get("GV_PAUSE_MS", 2500))  # столько тишины ждём, пока человек думает, прежде чем считать мысль законченной
 HANG, PRE = PAUSE_MS // 100, 3  # блоков по 100 мс: тишина после речи и предыстория перед ней
 
-TOKEN = os.environ.get("GV_TOKEN", "")  # токен сессии-хозяина: без него ручки плагина закрыты; пусто — открыты (отладка)
-PUBLIC = {"/", "/ws", "/takeover", "/prompt"}  # страница, журнал и просьба уступить порт — без токена
 
 ids = itertools.count(1)
 inbox: list[dict] = []  # вопросы Gemini → Claude
@@ -66,7 +64,7 @@ reqs: dict[int, dict] = {}  # запросы к основной сессии: i
 viewers: set[web.WebSocketResponse] = set()  # открытые страницы-журналы
 history: list[dict] = []  # события журнала: новая или обновлённая страница получает их все
 HISTORY_KEEP = 1000
-S = {"denied_at": 0.0, "poll_at": 0.0, "mute": False, "rec": None, "rec_t0": 0.0, "why": "закрыт сервером", "after_tool": False, "pre_audio": bytearray(), "pre_text": [], "sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
+S = {"poll_at": 0.0, "mute": False, "rec": None, "rec_t0": 0.0, "why": "закрыт сервером", "after_tool": False, "pre_audio": bytearray(), "pre_text": [], "sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
 
 TOOLS = [{"functionDeclarations": [{
     "name": "say_to_claude",
@@ -449,6 +447,9 @@ async def viewer(request: web.Request) -> web.WebSocketResponse:
 
 async def nxt(request: web.Request) -> web.Response:
     """Плагин забирает следующий вопрос; пока Claude занят, вопросы ждут — его не пинаем."""
+    if time.monotonic() - S["poll_at"] > 30:  # плагин жив и опрашивает: в журнал не чаще раза в 30 с
+        log("poll", queue=len(inbox), busy=S["busy"])
+    S["poll_at"] = time.monotonic()
     end = time.monotonic() + min(float(request.query.get("wait", NEXT_WAIT)), NEXT_WAIT)  # плагин спрашивает коротко: висящих запросов нет
     while time.monotonic() < end:
         if inbox and not S["busy"]:
@@ -563,20 +564,6 @@ async def ping(_: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 
-@web.middleware
-async def guard(request: web.Request, handler):
-    if TOKEN and request.path not in PUBLIC and request.headers.get("x-gv-token") != TOKEN:
-        if time.monotonic() - S["denied_at"] > 30:  # в журнал не чаще раза в 30 с
-            S["denied_at"] = time.monotonic()
-            log("denied", path=request.path, token_sent=bool(request.headers.get("x-gv-token")))
-        return web.Response(status=403, text="занято другой сессией")
-    if request.path == "/next" and time.monotonic() - S["poll_at"] > 30:  # плагин жив и опрашивает
-        log("poll", queue=len(inbox), busy=S["busy"])
-    if request.path == "/next":
-        S["poll_at"] = time.monotonic()
-    return await handler(request)
-
-
 async def takeover(_: web.Request) -> web.Response:
     """Новая сессия просит уступить: выходим."""
     log("exit", why="/takeover: пришла другая сессия")
@@ -651,7 +638,7 @@ async def index(_: web.Request) -> web.Response:
 
 
 def main() -> None:
-    app = web.Application(middlewares=[guard])
+    app = web.Application()
     app.on_startup.append(start)
     app.add_routes([web.get("/", index), web.get("/ws", viewer), web.get("/next", nxt), web.post("/busy", busy),
                     web.post("/answer", answer), web.post("/btw", btw), web.get("/quick", quick_next), web.post("/quickanswer", quick_answer), web.post("/say", say), web.post("/audio", audio),

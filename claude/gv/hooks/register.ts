@@ -11,7 +11,6 @@
 // Все обращения к движку — только здесь: `$` через импорт не передаётся.
 
 // Работает одна сессия с плагином: новая вытесняет старую — просит прежний сервис выйти (/takeover) и занимает его порт.
-// Ручки сервиса открыты только по токену сессии: вытесненная сессия получает 403 и замолкает, чужие вопросы не забирает.
 const PORT = 8790;
 const BASE = `http://127.0.0.1:${PORT}`;
 const TRIES = 6;
@@ -30,7 +29,7 @@ let displaced = false;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const call = ($, path: string, init: { method?: string; body?: string } = {}) =>
-  $.http.fetch(`${BASE}${path}`, { ...init, headers: { "x-gv-token": TOKEN, "content-type": "application/json" } });
+  $.http.fetch(`${BASE}${path}`, { ...init, headers: { "content-type": "application/json" } });
 
 const post = ($, path: string, body?: unknown) =>
   call($, path, { method: "POST", body: body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body) });
@@ -58,8 +57,8 @@ async function btw($, q: { id: number; text: string }): Promise<void> {
 
 let healing = false;
 
-// Токен хозяина сервиса лежит в файле: после перезагрузки плагина старый экземпляр видит чужой токен и больше не лечит и не опрашивает,
-// иначе он поднял бы сервис со своим токеном и отнял его у нового.
+// Хозяин сервиса записан в файле: новый экземпляр плагина (другая сессия или перезагрузка) пишет туда свой номер, старый видит чужой
+// номер и молча уходит — не опрашивает и не поднимает сервис заново. Токенов в самом сервисе нет.
 async function tokenFile($): Promise<string> {
   const home = await $.env.get("HOME");
   return `${home}/.claude/gv.token`;
@@ -79,7 +78,7 @@ async function launch($, options): Promise<boolean> {
     await sleep(250);
   }
   const env =
-    `GV_PORT=${PORT} GV_TOKEN=${TOKEN} GV_DUPLEX=${options.duplex === "off" ? "0" : "1"} GV_PAUSE_MS=${String(options.pause ?? "2500")}`;
+    `GV_PORT=${PORT} GV_DUPLEX=${options.duplex === "off" ? "0" : "1"} GV_PAUSE_MS=${String(options.pause ?? "2500")}`;
   await $.process
     .run(["sh", "-c", `${env} nohup uv run -q --script '${$.plugin.root}/voice.py' >>"$HOME/.claude/gv.out" 2>&1 &`])
     .catch((err) => $.ui.log(`gv: запуск не удался: ${String(err)}`, { to: "debug" }));
@@ -119,10 +118,7 @@ export function register(on, options) {
         try {
           const r = await call($, "/next?wait=1");
           down = 0;
-          if (r.status === 403) {
-            displaced = true;
-            if (!(await stale($))) $.ui.status("gv: голос взяла другая сессия");
-          } else if (r.status === 200 && r.text) {
+          if (r.status === 200 && r.text) {
             const { id, text, replaces } = JSON.parse(r.text);
             if (text) {
               voiceTurn = true;
