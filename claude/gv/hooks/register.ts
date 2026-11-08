@@ -47,6 +47,10 @@ async function btw($, q: { id: number; text: string }): Promise<void> {
     else if (reply.isAnswered && reply.text.trim()) text = reply.text.trim();
   } catch {}
   await post($, `/quickanswer?id=${q.id}`, text).catch(() => {});
+  // В чат — строкой-пометкой: модель её не читает, ход не запускается, основная работа не страдает.
+  await $.session
+    .append({ message: { type: "system", content: [{ type: "text", text: `⚡ btw: ${q.text}\n← ${text}` }] } })
+    .catch(() => {});
 }
 
 export function register(on, options) {
