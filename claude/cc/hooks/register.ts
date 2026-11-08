@@ -31,7 +31,7 @@ const LOG_KEEP = 500;
 
 export function register(on, options) {
   on("prompt.submit", async ($, e, next) => {
-    if (!e.text.trim() || !TYPED.includes(e.origin?.kind ?? "composer")) return next(e);
+    if (!e.text.trim() || !TYPED.includes(e.origin.kind)) return next(e);
     if (options.mode !== "auto") return next(e);
 
     // Поле после Enter пустое — крутим в нём, пока думает чистильщик, и убираем
@@ -96,20 +96,21 @@ async function spin($, until: Promise<unknown>): Promise<boolean> {
 // Одно завершение прямо из плагина: без сессии, CLAUDE.md, скиллов и инструментов —
 // иначе чистильщик отвечает по существу вместо правки. Разговор он видит данными
 // в системном промпте: без него «убери тот скилл» не раскрыть.
-// Любая осечка — null, и уходит исходный текст: текст дороже чистки.
+// Нет prompt.md или любая осечка — null, и уходит исходный текст: текст дороже чистки.
 async function clean($, text: string, options): Promise<string | null> {
   const who = options.model;
+  const system = buildSystem(text, await context($), await prompt($));
+  if (!system) return null;
   try {
     const reply = await $.model.complete({
       model: who,
-      system: buildSystem(text, await context($), await prompt($)),
+      system,
       prompt: `<реплика>\n${text}\n</реплика>`,
       maxTokens: MAX_TOKENS,
     });
-    const raw = replyText(reply);
-    const cleaned = raw === null ? null : parseAnswer(raw);
+    const cleaned = reply.isAnswered ? parseAnswer(reply.text) : null;
     await log($, { model: who, before: text, after: cleaned,
-                   ...(raw === null ? { reply: JSON.stringify(reply)?.slice(0, 500) } : {}) });
+                   ...(reply.isAnswered ? {} : { reason: reply.reason }) });
     return cleaned;
   } catch (error) {
     await log($, { model: who, before: text, after: null, error: String(error) });
@@ -123,22 +124,6 @@ async function prompt($): Promise<string> {
 
 async function context($): Promise<string> {
   return buildContext(await $.session.messages().catch(() => []));
-}
-
-// Ответ модели бывает строкой, { text }, { content: [...] } или массивом блоков.
-// String() от объекта дал бы «[object Object]» в чат. Текста нет — null.
-function replyText(reply): string | null {
-  if (typeof reply === "string") return reply;
-  if (Array.isArray(reply)) {
-    const parts = reply.map(replyText).filter((part) => part !== null);
-    return parts.length ? parts.join("") : null;
-  }
-  if (reply && typeof reply === "object") {
-    if (typeof reply.text === "string") return reply.text;
-    if (reply.content !== undefined) return replyText(reply.content);
-    if (reply.message !== undefined) return replyText(reply.message);
-  }
-  return null;
 }
 
 // $.fs умеет только read и write: перечитываем, дописываем, режем хвост.
