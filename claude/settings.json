@@ -71,7 +71,6 @@
       "options": {
         "mode": "auto",
         "delivery": "rewrite",
-        "prompt": "default",
         "model": "claude-opus-5"
       }
     }
