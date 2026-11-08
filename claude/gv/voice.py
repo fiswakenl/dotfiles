@@ -65,6 +65,8 @@ quick_f: dict[int, asyncio.Future] = {}  # ответы на них
 waiting: dict[int, asyncio.Future] = {}  # вызовы say_to_claude, ждущие ответа основной сессии
 WAIT_ANSWER = 900  # секунд Gemini ждёт ответа основной сессии
 viewers: set[web.WebSocketResponse] = set()  # открытые страницы-журналы
+history: list[dict] = []  # события журнала: новая или обновлённая страница получает их все
+HISTORY_KEEP = 1000
 S = {"sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
 
 TOOLS = [{"functionDeclarations": [{
@@ -113,7 +115,9 @@ def system_text() -> str:
 
 
 async def emit(obj: dict) -> None:
-    """Событие всем открытым журналам."""
+    """Событие всем открытым журналам; и в историю, чтобы обновлённая страница не начинала с чистого листа."""
+    history.append(obj)
+    del history[:-HISTORY_KEEP]
     for v in list(viewers):
         try:
             await v.send_json(obj)
@@ -347,6 +351,7 @@ async def viewer(request: web.Request) -> web.WebSocketResponse:
     await ws.prepare(request)
     viewers.add(ws)
     log("viewer.open", viewers=len(viewers))
+    await ws.send_json({"history": history})
     await ws.send_json({"state": "сокет Gemini открыт" if S["live"] else "сокет Gemini закрыт, откроется, когда заговорите"})
     try:
         async for _ in ws:
@@ -498,9 +503,13 @@ function add(k,t){cur={};const d=document.createElement('div');d.className=k;d.t
 function connect(){
  const ws=new WebSocket('ws://'+location.host+'/ws');
  ws.onopen=()=>st.textContent='журнал подключён · звук и микрофон — на компьютере';
- ws.onmessage=ev=>{const m=JSON.parse(ev.data);
+ const handle=m=>{
+  if(m.history){log.innerHTML='';cur={};m.history.forEach(handle);return}
   if(m.me)line('me','Вы: ',m.me);if(m.ai)line('ai','Gemini: ',m.ai);
-  if(m.ask)add('ask','→ Claude: '+m.ask);if(m.answer)add('ask','← Claude: '+m.answer);if(m.btwq)add('ask','⚡ /btw: '+m.btwq);if(m.btwa)add('ask','⚡ ← '+m.btwa);if(m.error)add('err',m.error);if(m.state)add('state','· '+m.state)};
+  if(m.ask)add('ask','→ Claude: '+m.ask);if(m.answer)add('ask','← Claude: '+m.answer);
+  if(m.btwq)add('ask','⚡ /btw: '+m.btwq);if(m.btwa)add('ask','⚡ ← '+m.btwa);
+  if(m.error)add('err',m.error);if(m.state)add('state','· '+m.state)};
+ ws.onmessage=ev=>handle(JSON.parse(ev.data));
  ws.onclose=()=>{st.textContent='сессия закрыта, жду новую…';setTimeout(connect,2000)};}
 connect();
 </script>"""
