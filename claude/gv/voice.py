@@ -447,9 +447,9 @@ async def viewer(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
-async def nxt(_: web.Request) -> web.Response:
+async def nxt(request: web.Request) -> web.Response:
     """Плагин забирает следующий вопрос; пока Claude занят, вопросы ждут — его не пинаем."""
-    end = time.monotonic() + NEXT_WAIT
+    end = time.monotonic() + min(float(request.query.get("wait", NEXT_WAIT)), NEXT_WAIT)  # плагин спрашивает коротко: висящих запросов нет
     while time.monotonic() < end:
         if inbox and not S["busy"]:
             S["busy"] = True  # с этой минуты Claude занят, не ждём /busy от плагина

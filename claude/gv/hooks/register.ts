@@ -18,6 +18,7 @@ const TRIES = 6;
 const MARK = "🎙"; // голосовое сообщение: по метке система знает, что ответ зачитают вслух
 const PING_MS = 20_000;
 const RETRY_MS = 2_000;
+const POLL_MS = 400; // пауза между короткими опросами /next
 const TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
 // Ход, начатый голосом: пока он не кончился, ответ уйдёт Gemini.
@@ -116,7 +117,7 @@ export function register(on, options) {
       while (!displaced) {
         if (await stale($)) break; // сервис теперь у другого экземпляра плагина или остановлен: молча уходим
         try {
-          const r = await call($, "/next");
+          const r = await call($, "/next?wait=1");
           down = 0;
           if (r.status === 403) {
             displaced = true;
@@ -129,7 +130,9 @@ export function register(on, options) {
               const fix = replaces ? "(поправка к прежнему запросу, новый текст полный) " : "";
               await $.prompt.submit({ text: `${MARK} ${fix}${text}`, asUser: true });
             }
-          } else if (r.status !== 204) {
+          } else if (r.status === 204) {
+            await sleep(POLL_MS);
+          } else {
             await sleep(RETRY_MS);
           }
         } catch {
