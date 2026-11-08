@@ -6,7 +6,7 @@
 
 Микрофон и колонки — самого компьютера (sounddevice): сервис слушает микрофон, а голос Gemini играет из колонок.
 Страница http://127.0.0.1:8790 — только журнал разговора, как devtools: ни звука, ни микрофона в браузере нет.
-Сокет Gemini открывается, когда есть что сказать или услышать, и закрывается после простоя (IDLE_CLOSE).
+Сокет Gemini открыт всё время, пока работает сервис (оборвался — открываем заново).
 Тишину в Gemini не шлём: она тарифицируется как речь. Пока Gemini говорит, микрофон не слушаем (эхо из колонок);
 GV_DUPLEX=1 — слушать всегда (в наушниках).
 
@@ -33,6 +33,7 @@ import base64
 import itertools
 import json
 import os
+import signal
 import sys
 import time
 from collections import deque
@@ -50,7 +51,6 @@ GEMINI_WS = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelang
 MODEL = "models/gemini-3.8-live"
 NEXT_WAIT = 25  # секунд ждёт /next, потом 204: плагин спрашивает снова
 PING_LOST = 90  # секунд без /ping — выходим
-IDLE_CLOSE = 180  # секунд без речи и звука — закрываем сокет Gemini (откроется заново сам)
 LOUD = 500  # уровень (RMS int16), с которого блок звука считается речью
 PAUSE_MS = int(os.environ.get("GV_PAUSE_MS", 2500))  # столько тишины ждём, пока человек думает, прежде чем считать мысль законченной
 HANG, PRE = PAUSE_MS // 100, 3  # блоков по 100 мс: тишина после речи и предыстория перед ней
@@ -336,13 +336,19 @@ async def mic_loop() -> None:
             await asyncio.sleep(2)
 
 
-async def idle_loop() -> None:
-    """Простой: сокет Gemini не держим впустую. Закрыт — откроется сам, когда нужен."""
+async def keep_live() -> None:
+    """Сокет Gemini открыт всё время, пока работает сервис: слушает сразу, не ждёт разговора. Оборвался (лимит сессии, сеть) — открываем заново."""
+    wait = 2
     while True:
-        await asyncio.sleep(10)
-        g = S["live"]
-        if g is not None and time.monotonic() - S["touch"] > IDLE_CLOSE and not S["busy"] and not (S["spk"] and S["spk"].busy):
-            await g.close()
+        try:
+            g = await ensure_live()
+            wait = 2
+            await g.wait_closed()
+        except Exception as ex:  # noqa: BLE001
+            log("gemini.error", error=f"открыть сокет: {type(ex).__name__}: {ex}")
+            await emit({"error": f"сокет Gemini: {type(ex).__name__}: {ex}"})
+            wait = min(wait * 2, 30)
+        await asyncio.sleep(wait)
 
 
 async def viewer(request: web.Request) -> web.WebSocketResponse:
@@ -471,6 +477,12 @@ async def takeover(_: web.Request) -> web.Response:
 
 async def start(_: web.Application) -> None:
     S["lock"] = asyncio.Lock()
+
+    def on_signal(signum, _frame) -> None:
+        log("exit", why=f"сигнал {signal.Signals(signum).name}")
+        os._exit(0)
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, on_signal)
     log("start", port=PORT, duplex=DUPLEX, pause_ms=PAUSE_MS, mic=os.environ.get("GV_MIC") != "0")
     try:
         S["spk"] = Speaker()
@@ -489,7 +501,7 @@ async def start(_: web.Application) -> None:
             if any(f.exists() and f.stat().st_mtime != stamp.get(f) for f in watched):  # код или инструкция изменились — перезапускаемся сами
                 log("reload")
                 os.execv(sys.executable, [sys.executable, *sys.argv])
-    for c in ((watchdog(), idle_loop()) if os.environ.get("GV_MIC") == "0" else (watchdog(), mic_loop(), idle_loop())):  # GV_MIC=0 — без микрофона (тесты)
+    for c in ((watchdog(), keep_live()) if os.environ.get("GV_MIC") == "0" else (watchdog(), keep_live(), mic_loop())):  # GV_MIC=0 — без микрофона (тесты)
         asyncio.create_task(c)
 
 

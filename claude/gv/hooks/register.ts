@@ -54,59 +54,53 @@ async function btw($, q: { id: number; text: string }): Promise<void> {
     .catch(() => {});
 }
 
+let healing = false;
+
+// Поднять сервис отдельным процессом (лог — ~/.claude/gv.out); true — отвечает.
+async function launch($, options): Promise<boolean> {
+  await $.http.fetch(`${BASE}/takeover`, { method: "POST" }).catch(() => {});
+  for (let i = 0; i < 20; i++) {
+    if (!(await $.http.fetch(`${BASE}/`).catch(() => null))) break;
+    await sleep(250);
+  }
+  const env =
+    `GV_PORT=${PORT} GV_TOKEN=${TOKEN} GV_DUPLEX=${options.duplex === "off" ? "0" : "1"} GV_PAUSE_MS=${String(options.pause ?? "2500")}`;
+  await $.process
+    .run(["sh", "-c", `${env} nohup uv run -q --script '${$.plugin.root}/voice.py' >>"$HOME/.claude/gv.out" 2>&1 &`])
+    .catch((err) => $.ui.log(`gv: запуск не удался: ${String(err)}`, { to: "debug" }));
+  for (let i = 0; i < 40; i++) {
+    await sleep(500);
+    if ((await post($, "/ping").catch(() => null))?.ok) return true;
+  }
+  return false;
+}
+
 export function register(on, options) {
   on("session.start", async ($, e, next) => {
     const result = await next(e);
     if (!e.isInteractive || started) return result;
     started = true;
 
-    // Сервис живёт, пока живёт цикл. Порт занят прежней сессией — просим её сервис выйти и ждём, пока порт освободится.
-    // Не поднялся — пробуем снова несколько раз; поработал и вышел (нас вытеснили или сессия кончилась) — не поднимаем.
+    // Сервис — отдельный процесс, не дочерний: перезагрузка плагина его не убивает. Занятый порт — просим прежний сервис выйти.
     void (async () => {
-      let opened = false;
-      for (let attempt = 0; attempt < TRIES; attempt++) {
-        await $.http.fetch(`${BASE}/takeover`, { method: "POST" }).catch(() => {});
-        for (let i = 0; i < 20; i++) {
-          if (!(await $.http.fetch(`${BASE}/`).catch(() => null))) break;
-          await sleep(250);
-        }
-        const startedAt = Date.now();
-        // Страницу открываем, когда сервис отвечает.
-        void (async () => {
-          for (let i = 0; i < 40 && !opened; i++) {
-            await sleep(500);
-            if ((await post($, "/ping").catch(() => null))?.ok) {
-              opened = true;
-              if (options.open === "on") void $.process.run(["open", BASE]).catch(() => {});
-              else $.ui.status(`gv: ${BASE}`);
-            }
-          }
-        })();
-        try {
-          const server = $.process.spawn({
-            argv: ["uv", "run", "-q", "--script", `${$.plugin.root}/voice.py`],
-            env: { GV_PORT: String(PORT), GV_TOKEN: TOKEN, GV_DUPLEX: options.duplex === "off" ? "0" : "1", GV_PAUSE_MS: String(options.pause ?? "2500") },
-          });
-          for await (const { stream, text } of server) {
-            if (stream === "stderr") $.ui.log(`gv: ${text.trim().slice(0, 300)}`, { to: "debug" });
-          }
-        } catch (err) {
-          $.ui.log(`gv: сервис не запустился: ${String(err)}`, { to: "debug" });
-        }
-        if (Date.now() - startedAt > 15_000) return;
-        await sleep(1000);
-      }
-      $.ui.status("gv: сервис не поднялся");
+      let up = false;
+      for (let attempt = 0; attempt < TRIES && !up; attempt++) up = await launch($, options);
+      if (!up) return void $.ui.status("gv: сервис не поднялся");
+      if (options.open === "on") void $.process.run(["open", BASE]).catch(() => {});
+      else $.ui.status(`gv: ${BASE}`);
     })();
 
     // Пинг: пока он идёт, сервис живёт.
     $.clock.every(PING_MS, () => void post($, "/ping").catch(() => {}));
 
     // Цикл забора вопросов: /next ждёт до 25 с и отдаёт 204, если вопросов нет. 403 — нас вытеснила другая сессия.
+    // Сервис не отвечает несколько раз подряд — поднимаем его заново.
     void (async () => {
+      let down = 0;
       while (!displaced) {
         try {
           const r = await call($, "/next");
+          down = 0;
           if (r.status === 403) {
             displaced = true;
             $.ui.status("gv: голос взяла другая сессия");
@@ -121,6 +115,12 @@ export function register(on, options) {
           }
         } catch {
           await sleep(RETRY_MS);
+          if (++down >= 3 && !healing && !displaced) {
+            healing = true;
+            down = 0;
+            await launch($, options).catch(() => false);
+            healing = false;
+          }
         }
       }
     })();
