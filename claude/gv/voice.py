@@ -328,6 +328,15 @@ async def quick(text: str) -> str:
 async def ask_claude(g, fc: dict, text: str) -> None:
     """Неблокирующая передача: номер возвращается сразу. Поправка (replaces) заменяет прежний запрос: в очереди — подменяет его,
     если Claude уже работает — его ответ будет отброшен, если уже ответил — поправка идёт следом как новый запрос."""
+    key = " ".join(text.lower().split())
+    for i, r in reqs.items():  # Gemini иногда зовёт функцию дважды подряд с тем же текстом — второй вызов не плодит запрос
+        if r.get("key") == key and time.monotonic() - r.get("at", 0) < 30 and r["state"] in ("queued", "served"):
+            log("ask.duplicate", id=i, text=text)
+            try:
+                await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": f"Запрос №{i} уже передан. Молчи."}}]}}))
+            except Exception:  # noqa: BLE001
+                pass
+            return
     n = next(ids)
     replaces = fc.get("args", {}).get("replaces")
     old = reqs.get(replaces) if isinstance(replaces, int) else None
@@ -339,7 +348,7 @@ async def ask_claude(g, fc: dict, text: str) -> None:
         elif old["state"] == "served":
             note = f" Claude уже работает над №{replaces}: его ответ не озвучу, ответ придёт на №{n}."
         old["state"] = "superseded" if old["state"] != "answered" else old["state"]
-    reqs[n] = {"text": text, "state": "queued", "replaces": replaces if old else None}
+    reqs[n] = {"text": text, "state": "queued", "replaces": replaces if old else None, "key": key, "at": time.monotonic()}
     inbox.append({"id": n, "text": text, "replaces": reqs[n]["replaces"]})
     log("ask", id=n, text=text, replaces=reqs[n]["replaces"])
     await emit({"ask": text, "id": n, "replaces": reqs[n]["replaces"]})
