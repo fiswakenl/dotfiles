@@ -61,8 +61,10 @@ ids = itertools.count(1)
 inbox: list[dict] = []  # вопросы Gemini → Claude
 quick_q: list[dict] = []  # быстрые вопросы /btw → ветка разговора Claude (идут и пока основной ход занят)
 quick_f: dict[int, asyncio.Future] = {}  # ответы на них
+waiting: dict[int, asyncio.Future] = {}  # вызовы say_to_claude, ждущие ответа основной сессии
+WAIT_ANSWER = 900  # секунд Gemini ждёт ответа основной сессии
 viewers: set[web.WebSocketResponse] = set()  # открытые страницы-журналы
-S = {"last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
+S = {"cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
 
 TOOLS = [{"functionDeclarations": [{
     "name": "say_to_claude",
@@ -175,14 +177,7 @@ async def read(g) -> None:
                 if fc["name"] == "btw":
                     asyncio.create_task(answer_btw(g, fc, text))
                     continue
-                inbox.append({"id": next(ids), "text": text})
-                await emit({"ask": text})
-                if S["busy"]:
-                    res = ("Claude сейчас занят прошлым запросом, этот в очереди и уйдёт, когда он закончит: его не перебиваем. "
-                           "Скажи это одной фразой и дальше поддерживай разговор сама; ответ придёт сообщением «[Ответ Claude]».")
-                else:
-                    res = "Передано Claude, он работает. Скажи одной фразой, что передала; ответ придёт сообщением «[Ответ Claude]»."
-                await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
+                asyncio.create_task(ask_claude(g, fc, text))
             c = e.get("serverContent", {})
             for p in c.get("modelTurn", {}).get("parts", []):
                 if "inlineData" in p and S["spk"]:
@@ -215,6 +210,25 @@ async def quick(text: str) -> str:
     quick_f.pop(n, None)
     await emit({"btwa": res})
     return res
+
+
+async def ask_claude(g, fc: dict, text: str) -> None:
+    """Блокирующая передача: вызов функции висит, пока Claude не закончит ответ, и Gemini молчит; ответ — результат вызова."""
+    n = next(ids)
+    fut = asyncio.get_running_loop().create_future()
+    waiting[n] = fut
+    inbox.append({"id": n, "text": text})
+    await emit({"ask": text})
+    try:
+        res = await asyncio.wait_for(fut, WAIT_ANSWER)
+    except TimeoutError:
+        res = "Claude не ответил вовремя."
+    waiting.pop(n, None)
+    await emit({"answer": res})
+    try:
+        await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def answer_btw(g, fc: dict, text: str) -> None:
@@ -303,7 +317,9 @@ async def nxt(_: web.Request) -> web.Response:
     while time.monotonic() < end:
         if inbox and not S["busy"]:
             S["busy"] = True  # с этой минуты Claude занят, не ждём /busy от плагина
-            return web.json_response(inbox.pop(0))
+            item = inbox.pop(0)
+            S["cur"] = item["id"]  # на этот вопрос придёт ближайший /answer
+            return web.json_response(item)
         await asyncio.sleep(0.2)
     return web.Response(status=204)
 
@@ -316,7 +332,10 @@ async def busy(request: web.Request) -> web.Response:
 async def answer(request: web.Request) -> web.Response:
     text = (await request.read()).decode().strip()
     S["last"] = text
-    if text:
+    fut = waiting.get(S["cur"])
+    if fut and not fut.done():
+        fut.set_result(text or "Claude ответил пусто.")  # Gemini ждёт этот ответ как результат вызова
+    elif text:  # вызов уже не ждёт (вышло время, сокет закрылся) — отдаём текстом
         await to_gemini(f"[Ответ Claude] {text}\n\nПерескажи это человеку голосом своими словами, коротко и без списков.")
     return web.Response(text="ok")
 
