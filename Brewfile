@@ -1,8 +1,12 @@
 tap "oven-sh/bun"
 tap "runpod/runpodctl"
 tap "typewhisper/tap", trusted: { casks: ["typewhisper"] }
+# Simple, modern, secure file encryption
+brew "age"
 # Bourne-Again SHell, a UNIX command interpreter
 brew "bash"
+# Manage your dotfiles across multiple diverse machines, securely
+brew "chezmoi"
 # Container runtimes on MacOS (and Linux) with minimal setup
 brew "colima", restart_service: :changed
 # Pack, ship and run any application as a lightweight container
@@ -15,6 +19,8 @@ brew "ffmpeg"
 brew "ffmpeg-full"
 # GitHub command-line tool
 brew "gh"
+# Audit git repos for secrets
+brew "gitleaks"
 # Open-source GitLab command-line tool
 brew "glab"
 # Render markdown on the CLI
@@ -43,6 +49,8 @@ brew "python@3.11"
 brew "rclone"
 # Universal proxy platform
 brew "sing-box"
+# Editor of encrypted files
+brew "sops"
 # SOund eXchange: universal sound sample translator
 brew "sox"
 # Terminal multiplexer
@@ -53,6 +61,8 @@ brew "uv"
 brew "yazi"
 # Feature-rich command-line audio/video downloader
 brew "yt-dlp"
+# Shell extension to navigate your filesystem faster
+brew "zoxide"
 # runpodctl is a CLI tool to manage your GPU pods on RunPod.
 brew "runpod/runpodctl/runpodctl", trusted: true
 # Tool to flash OS images to SD cards & USB drives
@@ -72,7 +82,7 @@ cask "maccy"
 cask "obsidian"
 # Speech-to-text and AI text processing
 cask "typewhisper"
-uv "dvc"
+uv "dvc[ssh]"
 uv "edge-tts"
 npm "@tobilu/qmd"
 npm "icloud-md"
@@ -81,5 +91,3 @@ npm "pyright"
 npm "remodex"
 npm "typescript-language-server"
 npm "typescript"
-brew "age"
-brew "sops"

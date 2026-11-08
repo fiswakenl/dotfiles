@@ -24,3 +24,6 @@ if ! command -v yazi >/dev/null 2>&1; then
   install -m 755 "$tmp"/yazi-x86_64-unknown-linux-gnu/yazi "$tmp"/yazi-x86_64-unknown-linux-gnu/ya "$BIN"/
   rm -rf "$tmp"
 fi
+
+# zoxide — z ПАПКА, прыжок в частую папку (плагин в ~/.zshrc); ставится в ~/.local/bin
+command -v zoxide >/dev/null 2>&1 || curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh

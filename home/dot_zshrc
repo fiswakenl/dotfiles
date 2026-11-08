@@ -12,7 +12,7 @@ setopt CHASE_LINKS
 
 # Oh My Zsh
 ZSH_THEME="robbyrussell"
-plugins=(git)
+plugins=(git zoxide)  # zoxide: z ПАПКА — прыжок в частую папку по куску имени
 
 # Also loads personal configuration from $ZSH_CUSTOM/*.zsh:
 #   20-projects.zsh — Claude and project commands
