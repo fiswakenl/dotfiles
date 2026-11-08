@@ -56,7 +56,7 @@ PAUSE_MS = int(os.environ.get("GV_PAUSE_MS", 2500))  # столько тишин
 HANG, PRE = PAUSE_MS // 100, 3  # блоков по 100 мс: тишина после речи и предыстория перед ней
 
 TOKEN = os.environ.get("GV_TOKEN", "")  # токен сессии-хозяина: без него ручки плагина закрыты; пусто — открыты (отладка)
-PUBLIC = {"/", "/ws", "/takeover"}  # страница, журнал и просьба уступить порт — без токена
+PUBLIC = {"/", "/ws", "/takeover", "/prompt"}  # страница, журнал и просьба уступить порт — без токена
 
 ids = itertools.count(1)
 inbox: list[dict] = []  # вопросы Gemini → Claude
@@ -496,8 +496,9 @@ async def start(_: web.Application) -> None:
 PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Gemini ⇄ Claude</title>
 <style>body{font:15px ui-monospace,monospace;max-width:720px;margin:1.5rem auto;padding:0 1rem}#st{color:#888}
-#log div{margin:.35rem 0}.me{color:#06c}.ai{color:#222}.ask{color:#a50;font-style:italic}.err{color:#c00}.state{color:#888}</style>
-<div id=st>жду сессию Claude…</div><div id=log></div>
+details{margin:.6rem 0;color:#444}pre{white-space:pre-wrap;font:inherit;background:#f4f4f4;padding:.6rem;border-radius:6px}#log div{margin:.35rem 0}.me{color:#06c}.ai{color:#222}.ask{color:#a50;font-style:italic}.err{color:#c00}.state{color:#888}</style>
+<div id=st>жду сессию Claude…</div>
+<details id=pp><summary>Инструкция и функции Gemini</summary><pre id=prompt></pre></details><div id=log></div>
 <script>
 const log=document.getElementById('log'),st=document.getElementById('st');let cur={};
 function line(k,pre,t){let d=cur[k];if(!d||!d.isConnected){d=document.createElement('div');d.className=k;d.textContent=pre;log.append(d)}
@@ -505,7 +506,8 @@ function line(k,pre,t){let d=cur[k];if(!d||!d.isConnected){d=document.createElem
 function add(k,t){cur={};const d=document.createElement('div');d.className=k;d.textContent=t;log.append(d);scrollTo(0,document.body.scrollHeight)}
 function connect(){
  const ws=new WebSocket('ws://'+location.host+'/ws');
- ws.onopen=()=>st.textContent='журнал подключён · звук и микрофон — на компьютере';
+ ws.onopen=()=>{st.textContent='журнал подключён · звук и микрофон — на компьютере';
+  fetch('/prompt').then(r=>r.json()).then(p=>{document.getElementById('prompt').textContent=p.system+'\n\n— Функции —\n'+p.tools.map(t=>t.name+': '+t.description).join('\n')}).catch(()=>{})};
  const handle=m=>{
   if(m.history){log.innerHTML='';cur={};m.history.forEach(handle);return}
   if(m.me)line('me','Вы: ',m.me);if(m.ai)line('ai','Gemini: ',m.ai);
@@ -518,6 +520,11 @@ connect();
 </script>"""
 
 
+async def prompt(_: web.Request) -> web.Response:
+    """Что сейчас видит Gemini: инструкция и функции (для журнала в браузере)."""
+    return web.json_response({"system": system_text(), "tools": TOOLS[0]["functionDeclarations"]})
+
+
 async def index(_: web.Request) -> web.Response:
     return web.Response(text=PAGE, content_type="text/html")
 
@@ -527,7 +534,7 @@ def main() -> None:
     app.on_startup.append(start)
     app.add_routes([web.get("/", index), web.get("/ws", viewer), web.get("/next", nxt), web.post("/busy", busy),
                     web.post("/answer", answer), web.post("/btw", btw), web.get("/quick", quick_next), web.post("/quickanswer", quick_answer), web.post("/say", say), web.post("/audio", audio),
-                    web.get("/last", last), web.post("/ping", ping), web.post("/quit", quit_), web.post("/takeover", takeover)])
+                    web.get("/last", last), web.get("/prompt", prompt), web.post("/ping", ping), web.post("/quit", quit_), web.post("/takeover", takeover)])
     web.run_app(app, host="127.0.0.1", port=PORT, print=None)
 
 
