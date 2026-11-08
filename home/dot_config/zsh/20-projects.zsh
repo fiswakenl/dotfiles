@@ -1,9 +1,10 @@
 # Быстрый вход в проекты: cd в папку и Claude. Файл общий для мака и сервера — пути разные, ветвление по ОС здесь,
 # а не шаблоном chezmoi: так файл остаётся ссылкой в репо и правится на месте.
+# Claude Code с модом чистки промпта: ~/.claude/cc — ссылка chezmoi на dotfiles/claude/cc, на маке и на сервере.
+# Функция, а не алиас: алиас не виден функциям ниже — zsh разбирает блок if целиком.
+ccm() { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 command claude --plugin-dir ~/.claude/cc "$@"; }
+
 if [[ $OSTYPE == darwin* ]]; then
-  # Claude Code с модом чистки промпта (dnk/tools/cc) — без патча, штатный бинарник
-  # функция, а не алиас: алиас внутри if не виден функциям того же блока — zsh разбирает блок целиком
-  ccm() { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 command claude --plugin-dir ~/Documents/store/dnk/tools/cc "$@"; }
   dnk() { cd ~/Documents/store/dnk && ccm "$@"; }
   klali() { cd ~/Documents/store/klali && ccm "$@"; }
   wde() { cd ~/Documents/store/WDE && ccm "$@"; }
@@ -15,6 +16,6 @@ if [[ $OSTYPE == darwin* ]]; then
   }
 else
   # сервер: проекты — клоны в домашней папке
-  sufler() { cd ~/sufler && claude "$@"; }
-  siphon() { cd ~/tools/siphon && claude "$@"; }
+  sufler() { cd ~/sufler && ccm "$@"; }
+  siphon() { cd ~/tools/siphon && ccm "$@"; }
 fi

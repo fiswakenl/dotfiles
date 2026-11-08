@@ -1,0 +1,4 @@
+{
+  "description": "Перехват отправки промпта",
+  "modules": ["./register.ts"]
+}
