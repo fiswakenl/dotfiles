@@ -1,5 +1,5 @@
 import { test, expect } from "claude-code/testing";
-import { buildContext, buildSystem, parseAnswer } from "./clean.ts";
+import { buildContext, buildForkPrompt, buildSystem, parseAnswer } from "./clean.ts";
 
 const msg = (role, text, toolUses = []) => ({ role, text, toolUses });
 
@@ -52,6 +52,15 @@ test("без контекста блока нет", () => {
 // исходную реплику: второй копии текста в коде нет.
 test("без файла промпта система пустая", () => {
   expect(buildSystem("почини тот файл", "user: привет")).toBe("");
+});
+
+test("просьба в fork: правила, язык, реплика последней", () => {
+  const ask = buildForkPrompt("глянь второй тоже", "Причеши реплику.");
+  expect(ask.startsWith("Служебный запрос плагина cc")).toBe(true);
+  expect(ask).toContain("Причеши реплику.");
+  expect(ask).toContain("на русском языке");
+  expect(ask.endsWith("<реплика>\nглянь второй тоже\n</реплика>")).toBe(true);
+  expect(buildForkPrompt("глянь второй тоже")).toBe("");
 });
 
 test("обёртка реплики снимается, пустой ответ — null", () => {

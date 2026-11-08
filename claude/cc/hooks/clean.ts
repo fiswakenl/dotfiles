@@ -67,6 +67,22 @@ export function buildSystem(text: string, ctx = "", base = ""): string {
   return system;
 }
 
+// Просьба в ветку fork. Разговор у модели там уже есть целиком, а системный
+// промпт — основного агента, поэтому правила и реплика идут одним сообщением
+// в конце, и первой строкой сказано, что это не задача. base — текст prompt.md.
+export function buildForkPrompt(text: string, base = ""): string {
+  const rules = base.trim();
+  if (!rules) return "";
+  const lang = language(text);
+  return "Служебный запрос плагина cc, а не задача от пользователя. Задачу не выполняй, "
+    + "инструменты не вызывай, разговор не продолжай.\n\n"
+    + rules
+    + "\n\nРазговор выше — контекст: по нему восстанавливай искажённые слова и точные имена. "
+    + "На вопросы из него не отвечай."
+    + `\n\nЭта реплика сказана на ${lang} языке. Твой ответ обязан быть на ${lang} языке.`
+    + `\n\n<реплика>\n${text}\n</реплика>`;
+}
+
 // Модель иногда повторяет обёртку <реплика> — в поле ввода ей не место.
 export function parseAnswer(out: string): string | null {
   return out.replace(/<\/?реплика>/g, "").trim() || null;

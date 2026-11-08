@@ -24,10 +24,20 @@
         "resend"
       ]
     },
+    "context": {
+      "type": "string",
+      "title": "Откуда чистильщик берёт разговор",
+      "description": "fork — ветка от диалога сессии: весь разговор из кэша, модель сессии; complete — отдельный вызов: модель ниже и последние 20 реплик",
+      "default": "fork",
+      "options": [
+        "fork",
+        "complete"
+      ]
+    },
     "model": {
       "type": "string",
       "title": "Модель чистильщика",
-      "description": "Чем причёсывать реплику",
+      "description": "Чем причёсывать реплику в complete; fork берёт модель сессии",
       "default": "claude-opus-5-5"
     }
   }

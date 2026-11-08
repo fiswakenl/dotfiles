@@ -8,7 +8,7 @@
 //
 // Все обращения к движку — только здесь: `$` через импорт не передаётся.
 
-import { buildContext, buildSystem, parseAnswer } from "./clean.ts";
+import { buildContext, buildForkPrompt, buildSystem, parseAnswer } from "./clean.ts";
 
 // Своих имён для сочетаний завести нельзя — занимаем чужое, из списка движка.
 // Свой чорд вешаешь на него в ~/.claude/keybindings.json.
@@ -93,27 +93,41 @@ async function spin($, until: Promise<unknown>): Promise<boolean> {
   return true;
 }
 
-// Одно завершение прямо из плагина: без сессии, CLAUDE.md, скиллов и инструментов —
-// иначе чистильщик отвечает по существу вместо правки. Разговор он видит данными
-// в системном промпте: без него «убери тот скилл» не раскрыть.
+// Два пути, выбор — options.context.
+// fork — ветка от последнего запроса сессии: весь разговор из кэша, модель
+// и системный промпт сессии; правила и реплика — одним сообщением в конце.
+// complete — отдельный вызов без сессии, CLAUDE.md и инструментов: свой системный
+// промпт с правилами и последними репликами разговора, своя модель.
+// В новой сессии ответвляться не от чего — тогда complete.
 // Нет prompt.md или любая осечка — null, и уходит исходный текст: текст дороже чистки.
 async function clean($, text: string, options): Promise<string | null> {
-  const who = options.model;
-  const system = buildSystem(text, await context($), await prompt($));
-  if (!system) return null;
+  const rules = await prompt($);
+  if (!rules.trim()) return null;
+  const started = Date.now();
+  let via = options.context;
+  let model = options.model;
   try {
-    const reply = await $.model.complete({
-      model: who,
-      system,
-      prompt: `<реплика>\n${text}\n</реплика>`,
-      maxTokens: MAX_TOKENS,
-    });
+    let reply = via === "fork"
+      ? await $.model.fork({ prompt: buildForkPrompt(text, rules) })
+      : null;
+    const forked = reply !== null && reply.reason !== "nothing-to-fork";
+    if (forked) {
+      model = await $.session.model();
+    } else {
+      via = "complete";
+      reply = await $.model.complete({
+        model,
+        system: buildSystem(text, await context($), rules),
+        prompt: `<реплика>\n${text}\n</реплика>`,
+        maxTokens: MAX_TOKENS,
+      });
+    }
     const cleaned = reply.isAnswered ? parseAnswer(reply.text) : null;
-    await log($, { model: who, before: text, after: cleaned,
+    await log($, { via, model, ms: Date.now() - started, before: text, after: cleaned,
                    ...(reply.isAnswered ? {} : { reason: reply.reason }) });
     return cleaned;
   } catch (error) {
-    await log($, { model: who, before: text, after: null, error: String(error) });
+    await log($, { via, model, before: text, after: null, error: String(error) });
     return null;
   }
 }
