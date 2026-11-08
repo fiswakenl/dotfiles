@@ -112,12 +112,13 @@ export function register(on, options) {
     void (async () => {
       let down = 0;
       while (!displaced) {
+        if (await stale($)) break; // сервис теперь у другого экземпляра плагина или остановлен: молча уходим
         try {
           const r = await call($, "/next");
           down = 0;
           if (r.status === 403) {
             displaced = true;
-            $.ui.status("gv: голос взяла другая сессия");
+            if (!(await stale($))) $.ui.status("gv: голос взяла другая сессия");
           } else if (r.status === 200 && r.text) {
             const { id, text, replaces } = JSON.parse(r.text);
             if (text) {
