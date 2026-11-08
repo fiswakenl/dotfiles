@@ -67,7 +67,7 @@ WAIT_ANSWER = 900  # секунд Gemini ждёт ответа основной 
 viewers: set[web.WebSocketResponse] = set()  # открытые страницы-журналы
 history: list[dict] = []  # события журнала: новая или обновлённая страница получает их все
 HISTORY_KEEP = 1000
-S = {"sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
+S = {"after_tool": False, "pre_audio": bytearray(), "pre_text": [], "sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
 
 TOOLS = [{"functionDeclarations": [{
     "name": "say_to_claude",
@@ -154,6 +154,25 @@ class Speaker:
         return bool(self.buf) or time.monotonic() < self.until
 
 
+def chime() -> bytes:
+    """Короткий сигнал «передано» (PCM 24 кГц) вместо слов: сервис подаёт его сам."""
+    n = int(24000 * 0.12)
+    t = np.arange(n) / 24000
+    env = np.minimum(1.0, np.minimum(t / 0.01, (0.12 - t) / 0.03))
+    return (np.sin(2 * np.pi * 880 * t) * env * 0.25 * 32767).astype(np.int16).tobytes()
+
+
+async def flush_pre() -> None:
+    """Ход без вызова функции: то, что придержали, говорим как есть."""
+    if S["pre_audio"] and S["spk"]:
+        S["spk"].add(bytes(S["pre_audio"]))
+    for t in S["pre_text"]:
+        log("said", text=t)
+        await emit({"ai": t})
+    S["pre_audio"].clear()
+    S["pre_text"].clear()
+
+
 def touch() -> None:
     S["touch"] = time.monotonic()
 
@@ -203,6 +222,12 @@ async def read(g) -> None:
             for fc in e.get("toolCall", {}).get("functionCalls", []):
                 text = fc.get("args", {}).get("text", "")
                 log("gemini.call", name=fc["name"], text=text)
+                if S["pre_audio"] or S["pre_text"]:  # всё, что она сказала перед вызовом, не произносим
+                    log("dropped", chars=sum(len(x) for x in S["pre_text"]), audio_bytes=len(S["pre_audio"]))
+                S["pre_audio"].clear()
+                S["pre_text"].clear()
+                if fc["name"] == "say_to_claude" and S["spk"]:
+                    S["spk"].add(chime())
                 if fc["name"] == "btw":
                     asyncio.create_task(answer_btw(g, fc, text))
                     continue
@@ -212,20 +237,30 @@ async def read(g) -> None:
                 if "inlineData" in p and S["spk"]:
                     pcm = base64.b64decode(p["inlineData"]["data"])
                     S["got"] += len(pcm)
-                    S["spk"].add(pcm)
+                    if S["after_tool"]:  # ответ на вызов функции — говорим сразу
+                        S["spk"].add(pcm)
+                    else:  # ход по вашей реплике: придерживаем до вызова функции или конца хода
+                        S["pre_audio"].extend(pcm)
             if t := c.get("inputTranscription", {}).get("text"):
                 log("heard", text=t)
                 await emit({"me": t})
             if t := c.get("outputTranscription", {}).get("text"):
                 if "<no speech" not in t and "{pause}" not in t:  # метка «молчу» от самой модели — не речь
-                    log("said", text=t)
-                    await emit({"ai": t})
+                    if S["after_tool"]:
+                        log("said", text=t)
+                        await emit({"ai": t})
+                    else:
+                        S["pre_text"].append(t)
                 else:
                     log("silent")
             if c.get("interrupted") and S["spk"]:
                 S["spk"].clear()
+                S["pre_audio"].clear()
+                S["pre_text"].clear()
                 log("interrupted")
             if c.get("turnComplete"):
+                await flush_pre()
+                S["after_tool"] = False
                 log("turn", audio_sent_bytes=S["sent"], audio_got_bytes=S["got"])
     except Exception as ex:  # noqa: BLE001
         log("gemini.error", error=f"{type(ex).__name__}: {ex}")
@@ -270,6 +305,7 @@ async def ask_claude(g, fc: dict, text: str) -> None:
     waiting.pop(n, None)
     log("answer.to_gemini", id=n, chars=len(res))
     await emit({"answer": res})
+    S["after_tool"] = True
     try:
         await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
     except Exception:  # noqa: BLE001
@@ -278,6 +314,7 @@ async def ask_claude(g, fc: dict, text: str) -> None:
 
 async def answer_btw(g, fc: dict, text: str) -> None:
     res = await quick(text)
+    S["after_tool"] = True
     try:
         await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
     except Exception:  # noqa: BLE001
