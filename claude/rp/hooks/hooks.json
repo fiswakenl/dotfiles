@@ -1,0 +1,4 @@
+{
+  "description": "Стенд замены запроса",
+  "modules": ["./register.ts"]
+}
