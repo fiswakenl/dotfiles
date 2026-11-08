@@ -57,8 +57,21 @@ async function btw($, q: { id: number; text: string }): Promise<void> {
 
 let healing = false;
 
+// Токен хозяина сервиса лежит в файле: после перезагрузки плагина старый экземпляр видит чужой токен и больше не лечит и не опрашивает,
+// иначе он поднял бы сервис со своим токеном и отнял его у нового.
+async function tokenFile($): Promise<string> {
+  const home = await $.env.get("HOME");
+  return `${home}/.claude/gv.token`;
+}
+
+async function stale($): Promise<boolean> {
+  const owner = String(await $.fs.read(await tokenFile($)).catch(() => "")).trim();
+  return owner !== "" && owner !== TOKEN;
+}
+
 // Поднять сервис отдельным процессом (лог — ~/.claude/gv.out); true — отвечает.
 async function launch($, options): Promise<boolean> {
+  await $.fs.write(await tokenFile($), TOKEN).catch(() => {});
   await $.http.fetch(`${BASE}/takeover`, { method: "POST" }).catch(() => {});
   for (let i = 0; i < 20; i++) {
     if (!(await $.http.fetch(`${BASE}/`).catch(() => null))) break;
@@ -118,6 +131,10 @@ export function register(on, options) {
           }
         } catch {
           await sleep(RETRY_MS);
+          if (await stale($)) {
+            displaced = true;
+            return;
+          }
           if (++down >= 3 && !healing && !displaced) {
             healing = true;
             down = 0;

@@ -587,7 +587,7 @@ async def start(_: web.Application) -> None:
         signal.signal(sig, on_signal)
     log("start", port=PORT, duplex=DUPLEX, pause_ms=PAUSE_MS, mic=os.environ.get("GV_MIC") != "0")
     try:
-        S["spk"] = Speaker()
+        S["spk"] = None if os.environ.get("GV_SPK") == "0" else Speaker()  # GV_SPK=0 — без колонок (тесты не шумят)
     except Exception as ex:  # noqa: BLE001
         print(f"колонки: {type(ex).__name__}: {ex}", flush=True)
 
