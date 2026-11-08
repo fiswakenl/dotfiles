@@ -51,7 +51,8 @@ NEXT_WAIT = 25  # секунд ждёт /next, потом 204: плагин сп
 PING_LOST = 90  # секунд без /ping — выходим
 IDLE_CLOSE = 180  # секунд без речи и звука — закрываем сокет Gemini (откроется заново сам)
 LOUD = 500  # уровень (RMS int16), с которого блок звука считается речью
-HANG, PRE = 10, 3  # блоков по 100 мс: сколько тишины держим после речи и сколько предыстории шлём перед ней
+PAUSE_MS = int(os.environ.get("GV_PAUSE_MS", 2500))  # столько тишины ждём, пока человек думает, прежде чем считать мысль законченной
+HANG, PRE = PAUSE_MS // 100, 3  # блоков по 100 мс: тишина после речи и предыстория перед ней
 
 TOKEN = os.environ.get("GV_TOKEN", "")  # токен сессии-хозяина: без него ручки плагина закрыты; пусто — открыты (отладка)
 PUBLIC = {"/", "/ws", "/takeover"}  # страница, журнал и просьба уступить порт — без токена
@@ -139,7 +140,9 @@ async def ensure_live():
         env = gemini_env()
         setup = {"model": MODEL, "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {"languageCode": "ru-RU"}},
                  "systemInstruction": {"parts": [{"text": system_text()}]}, "tools": TOOLS,
-                 "inputAudioTranscription": {}, "outputAudioTranscription": {}}
+                 "inputAudioTranscription": {}, "outputAudioTranscription": {},
+                 # терпеливый конец речи: пауза на размышление не считается концом (запасной вариант к нашему сигналу audioStreamEnd)
+                 "realtimeInputConfig": {"automaticActivityDetection": {"endOfSpeechSensitivity": "END_SENSITIVITY_LOW", "silenceDurationMs": PAUSE_MS}}}
         g = await websockets.connect(GEMINI_WS, additional_headers={"x-goog-api-key": env["GEMINI_API_KEY"]}, proxy=env["GEMINI_PROXY"], max_size=None)
         await g.send(json.dumps({"setup": setup}))
         S["live"] = g
