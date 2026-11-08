@@ -142,7 +142,13 @@ async function spin($, until: Promise<unknown>): Promise<boolean> {
 // В новой сессии ответвляться не от чего — тогда complete.
 // Нет prompt.md или любая осечка — null, и уходит исходный текст: текст дороже чистки.
 // found — что нашёл агент проверки: второй заход, просить проверку снова нельзя.
+// Чистка не должна ни отвечать на реплику, ни разрастаться: ветка сессии иногда отвечает на вопрос вместо переписывания —
+// такой «чистый» текст ушёл бы в чат как слова человека. Длиннее оригинала более чем в полтора раза (+запас) — отбрасываем.
+const GROWTH = 1.5;
+const GROWTH_PAD = 40;
+
 async function clean($, text: string, options, found = ""): Promise<string | null> {
+  if (text.includes("<pasted_content")) return null; // вставленный текст не причёсываем
   const check = options.check === "on" && !found ? await prompt($, "check.md") : "";
   const rules = buildRules(await prompt($, "prompt.md"), check, found);
   if (!rules) return null;
@@ -165,7 +171,11 @@ async function clean($, text: string, options, found = ""): Promise<string | nul
         maxTokens: MAX_TOKENS,
       });
     }
-    const cleaned = reply.isAnswered ? parseAnswer(reply.text) : null;
+    let cleaned = reply.isAnswered ? parseAnswer(reply.text) : null;
+    if (cleaned && cleaned.length > text.length * GROWTH + GROWTH_PAD) {
+      await log($, { via, model, ms: Date.now() - started, before: text, after: null, rejected: "ответ длиннее реплики", answer: cleaned.slice(0, 300) });
+      return null;
+    }
     await log($, { via, model, ms: Date.now() - started, before: text, after: cleaned,
                    ...(reply.isAnswered ? {} : { reason: reply.reason }) });
     return cleaned;
