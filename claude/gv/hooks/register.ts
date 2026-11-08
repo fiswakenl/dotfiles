@@ -94,12 +94,14 @@ export function register(on, options) {
     const result = await next(e);
     if (!e.isInteractive || started) return result;
     started = true;
+    $.ui.status(undefined);
 
     // Сервис — отдельный процесс, не дочерний: перезагрузка плагина его не убивает. Занятый порт — просим прежний сервис выйти.
     void (async () => {
       let up = false;
       for (let attempt = 0; attempt < TRIES && !up; attempt++) up = await launch($, options);
       if (!up) return void $.ui.status("gv: сервис не поднялся");
+      $.ui.status(undefined); // убрать устаревшие предупреждения прежних экземпляров
       if (options.open === "on") void $.process.run(["open", BASE]).catch(() => {});
       else $.ui.status(`gv: ${BASE}`);
     })();
