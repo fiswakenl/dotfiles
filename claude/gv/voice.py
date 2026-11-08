@@ -62,17 +62,17 @@ ids = itertools.count(1)
 inbox: list[dict] = []  # вопросы Gemini → Claude
 quick_q: list[dict] = []  # быстрые вопросы /btw → ветка разговора Claude (идут и пока основной ход занят)
 quick_f: dict[int, asyncio.Future] = {}  # ответы на них
-waiting: dict[int, asyncio.Future] = {}  # вызовы say_to_claude, ждущие ответа основной сессии
-WAIT_ANSWER = 900  # секунд Gemini ждёт ответа основной сессии
+reqs: dict[int, dict] = {}  # запросы к основной сессии: id → {text, state: queued|served|answered|superseded, replaces}
 viewers: set[web.WebSocketResponse] = set()  # открытые страницы-журналы
 history: list[dict] = []  # события журнала: новая или обновлённая страница получает их все
 HISTORY_KEEP = 1000
-S = {"rec": None, "rec_t0": 0.0, "why": "закрыт сервером", "after_tool": False, "pre_audio": bytearray(), "pre_text": [], "sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
+S = {"mute": False, "rec": None, "rec_t0": 0.0, "why": "закрыт сервером", "after_tool": False, "pre_audio": bytearray(), "pre_text": [], "sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
 
 TOOLS = [{"functionDeclarations": [{
     "name": "say_to_claude",
-    "description": "Передать Claude Code то, что сказал человек: вопрос, просьба или поручение, своими словами, самодостаточно и коротко",
-    "parameters": {"type": "OBJECT", "properties": {"text": {"type": "STRING", "description": "Что сказал человек, ясным письменным текстом"}},
+    "description": "Передать Claude Code то, что сказал человек: вопрос, просьба или поручение, своими словами, самодостаточно и коротко. Возвращается сразу с номером запроса; ответ придёт позже сообщением. Если человек продолжил или поправил мысль после отправки, вызови снова с replaces=номер прежнего запроса и ПОЛНЫМ текстом (прежнее и новое вместе)",
+    "parameters": {"type": "OBJECT", "properties": {"text": {"type": "STRING", "description": "Что сказал человек, ясным письменным текстом"},
+                                                    "replaces": {"type": "INTEGER", "description": "Номер прежнего запроса, который этот заменяет; не указывай для нового вопроса"}},
                    "required": ["text"]}}, {
     "name": "btw",
     "description": "Мгновенный вопрос Claude Code по тому, что уже есть в разговоре сессии: ответ за пару секунд, пока основная работа идёт. Не для поручений и не для того, что требует смотреть файлы",
@@ -266,7 +266,9 @@ async def read(g) -> None:
                 if "inlineData" in p and S["spk"]:
                     pcm = base64.b64decode(p["inlineData"]["data"])
                     S["got"] += len(pcm)
-                    if S["after_tool"]:  # ответ на вызов функции — говорим сразу
+                    if S["mute"]:  # после передачи запроса молчим до ответа
+                        pass
+                    elif S["after_tool"]:  # ответ на вызов функции — говорим сразу
                         S["spk"].add(pcm)
                     else:  # ход по вашей реплике: придерживаем до вызова функции или конца хода
                         S["pre_audio"].extend(pcm)
@@ -275,7 +277,9 @@ async def read(g) -> None:
                 await emit({"me": t})
             if t := c.get("outputTranscription", {}).get("text"):
                 if "<no speech" not in t and "{pause}" not in t:  # метка «молчу» от самой модели — не речь
-                    if S["after_tool"]:
+                    if S["mute"]:
+                        log("muted", text=t)
+                    elif S["after_tool"]:
                         log("said", text=t)
                         await emit({"ai": t})
                     else:
@@ -290,6 +294,7 @@ async def read(g) -> None:
             if c.get("turnComplete"):
                 await flush_pre()
                 S["after_tool"] = False
+                S["mute"] = False
                 log("turn", audio_sent_bytes=S["sent"], audio_got_bytes=S["got"])
     except Exception as ex:  # noqa: BLE001
         log("gemini.error", error=f"{type(ex).__name__}: {ex}")
@@ -323,21 +328,25 @@ async def quick(text: str) -> str:
 
 
 async def ask_claude(g, fc: dict, text: str) -> None:
-    """Блокирующая передача: вызов функции висит, пока Claude не закончит ответ, и Gemini молчит; ответ — результат вызова."""
+    """Неблокирующая передача: номер возвращается сразу. Поправка (replaces) заменяет прежний запрос: в очереди — подменяет его,
+    если Claude уже работает — его ответ будет отброшен, если уже ответил — поправка идёт следом как новый запрос."""
     n = next(ids)
-    fut = asyncio.get_running_loop().create_future()
-    waiting[n] = fut
-    inbox.append({"id": n, "text": text})
-    log("ask", id=n, text=text)
-    await emit({"ask": text})
-    try:
-        res = await asyncio.wait_for(fut, WAIT_ANSWER)
-    except TimeoutError:
-        res = "Claude не ответил вовремя."
-    waiting.pop(n, None)
-    log("answer.to_gemini", id=n, chars=len(res))
-    await emit({"answer": res})
-    S["after_tool"] = True
+    replaces = fc.get("args", {}).get("replaces")
+    old = reqs.get(replaces) if isinstance(replaces, int) else None
+    note = ""
+    if old:
+        if old["state"] == "queued":
+            inbox[:] = [i for i in inbox if i["id"] != replaces]
+            note = f" Прежний запрос №{replaces} заменён."
+        elif old["state"] == "served":
+            note = f" Claude уже работает над №{replaces}: его ответ не озвучу, ответ придёт на №{n}."
+        old["state"] = "superseded" if old["state"] != "answered" else old["state"]
+    reqs[n] = {"text": text, "state": "queued", "replaces": replaces if old else None}
+    inbox.append({"id": n, "text": text, "replaces": reqs[n]["replaces"]})
+    log("ask", id=n, text=text, replaces=reqs[n]["replaces"])
+    await emit({"ask": text, "id": n, "replaces": reqs[n]["replaces"]})
+    S["mute"] = True  # остаток этого хода не озвучиваем: ждём ответ молча
+    res = f"Запрос №{n} передан.{note} Молчи. Если человек продолжит говорить по этой теме, вызови say_to_claude с replaces={n} и полным текстом."
     try:
         await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
     except Exception:  # noqa: BLE001
@@ -446,7 +455,9 @@ async def nxt(_: web.Request) -> web.Response:
             S["busy"] = True  # с этой минуты Claude занят, не ждём /busy от плагина
             item = inbox.pop(0)
             S["cur"] = item["id"]  # на этот вопрос придёт ближайший /answer
-            log("next.served", id=item["id"])
+            if item["id"] in reqs:
+                reqs[item["id"]]["state"] = "served"
+            log("next.served", id=item["id"], replaces=item.get("replaces"))
             return web.json_response(item)
         await asyncio.sleep(0.2)
     return web.Response(status=204)
@@ -459,14 +470,23 @@ async def busy(request: web.Request) -> web.Response:
 
 
 async def answer(request: web.Request) -> web.Response:
+    """Ответ Claude (?id=N — на какой запрос). Устаревший (заменён поправкой) отбрасываем, остальной озвучивает Gemini."""
     text = (await request.read()).decode().strip()
+    n = int(request.query.get("id", S["cur"]))
     S["last"] = text
-    log("answer.from_claude", id=S["cur"], chars=len(text))
-    fut = waiting.get(S["cur"])
-    if fut and not fut.done():
-        fut.set_result(text or "Claude ответил пусто.")  # Gemini ждёт этот ответ как результат вызова
-    elif text:  # вызов уже не ждёт (вышло время, сокет закрылся) — отдаём текстом
-        await to_gemini(f"[Ответ Claude] {text}\n\nПерескажи это человеку голосом своими словами, коротко и без списков.")
+    r = reqs.get(n)
+    if r and r["state"] == "superseded":
+        log("answer.dropped", id=n, chars=len(text), why="запрос заменён поправкой")
+        await emit({"state": f"ответ на №{n} отброшен: запрос заменён"})
+        return web.Response(text="dropped")
+    if r:
+        r["state"] = "answered"
+    log("answer.from_claude", id=n, chars=len(text))
+    await emit({"answer": text, "id": n})
+    if text:
+        S["mute"] = False
+        S["after_tool"] = True  # ответ говорим сразу
+        await to_gemini(f"[Ответ Claude на запрос №{n}] {text}\n\nПрочитай это человеку вслух почти дословно, от первого лица, ничего не добавляя.")
     return web.Response(text="ok")
 
 
@@ -488,8 +508,20 @@ async def audio(request: web.Request) -> web.Response:
 
 
 async def say(request: web.Request) -> web.Response:
-    inbox.append({"id": next(ids), "text": (await request.json()).get("text", "")})
-    return web.Response(text="ok")
+    """Запрос текстом, как вызов say_to_claude: {"text", "replaces"?}; для отладки без голоса."""
+    body = await request.json()
+    n = next(ids)
+    replaces = body.get("replaces")
+    old = reqs.get(replaces)
+    if old:
+        if old["state"] == "queued":
+            inbox[:] = [i for i in inbox if i["id"] != replaces]
+        if old["state"] != "answered":
+            old["state"] = "superseded"
+    reqs[n] = {"text": body.get("text", ""), "state": "queued", "replaces": replaces if old else None}
+    inbox.append({"id": n, "text": body.get("text", ""), "replaces": reqs[n]["replaces"]})
+    log("ask", id=n, text=body.get("text", ""), replaces=reqs[n]["replaces"])
+    return web.json_response({"id": n})
 
 
 async def last(_: web.Request) -> web.Response:

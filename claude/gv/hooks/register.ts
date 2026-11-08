@@ -22,6 +22,7 @@ const TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).s
 
 // Ход, начатый голосом: пока он не кончился, ответ уйдёт Gemini.
 let voiceTurn = false;
+let currentId = 0; // номер запроса, над которым идёт ход
 let started = false;
 let displaced = false;
 
@@ -105,10 +106,12 @@ export function register(on, options) {
             displaced = true;
             $.ui.status("gv: голос взяла другая сессия");
           } else if (r.status === 200 && r.text) {
-            const { text } = JSON.parse(r.text);
+            const { id, text, replaces } = JSON.parse(r.text);
             if (text) {
               voiceTurn = true;
-              await $.prompt.submit({ text: `${MARK} ${text}`, asUser: true });
+              currentId = id;
+              const fix = replaces ? "(поправка к прежнему запросу, новый текст полный) " : "";
+              await $.prompt.submit({ text: `${MARK} ${fix}${text}`, asUser: true });
             }
           } else if (r.status !== 204) {
             await sleep(RETRY_MS);
@@ -179,7 +182,7 @@ export function register(on, options) {
     voiceTurn = false;
     await post($, "/busy", { busy: false }).catch(() => {});
     if (e.reason === "answer" && e.answer.trim()) {
-      await post($, "/answer", e.answer.trim()).catch(() => {});
+      await post($, `/answer?id=${currentId}`, e.answer.trim()).catch(() => {});
     }
     return next(e);
   });
