@@ -95,6 +95,8 @@ export function register(on, options) {
     if (!e.isInteractive || started) return result;
     started = true;
     $.ui.status(undefined);
+    // Хозяином становимся сразу и до всего остального: иначе собственный опрос успеет прочитать чужой номер в файле и решит, что его вытеснили.
+    await $.fs.write(await tokenFile($), TOKEN).catch(() => {});
 
     // Сервис — отдельный процесс, не дочерний: перезагрузка плагина его не убивает. Занятый порт — просим прежний сервис выйти.
     void (async () => {
