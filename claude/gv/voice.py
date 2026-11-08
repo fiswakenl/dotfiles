@@ -33,6 +33,7 @@ import base64
 import itertools
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -237,6 +238,87 @@ async def to_gemini(text: str) -> None:
     await live_send({"realtimeInput": {"text": text}})
 
 
+def speech_mode() -> str:
+    """Что делать с речью Gemini сейчас: молчать (ждём ответ), говорить сразу (ответ на вызов) или придержать (ход по вашей реплике)."""
+    if S["mute"]:
+        return "mute"
+    return "live" if S["after_tool"] else "hold"
+
+
+def drop_held() -> None:
+    """Придержанное выбрасываем: всё, что Gemini сказала перед вызовом функции, не произносим."""
+    if S["pre_audio"] or S["pre_text"]:
+        log("dropped", chars=sum(len(x) for x in S["pre_text"]), audio_bytes=len(S["pre_audio"]))
+    S["pre_audio"].clear()
+    S["pre_text"].clear()
+
+
+def on_audio(pcm: bytes) -> None:
+    S["got"] += len(pcm)
+    mode = speech_mode()
+    if mode == "live" and S["spk"]:
+        S["spk"].add(pcm)
+    elif mode == "hold" and S["spk"]:
+        S["pre_audio"].extend(pcm)
+
+
+SILENCE_MARK = re.compile(r"\s*<(no( speech>?)?)?\s*|\s*speech>\s*|.*\{pause\}.*|.*<no speech.*", re.S)
+
+
+async def on_text(t: str) -> None:
+    if SILENCE_MARK.fullmatch(t):  # метка «молчу» от самой модели приходит кусками («<no », «speech>»): это не речь
+        return log("silent")
+    mode = speech_mode()
+    if mode == "mute":
+        return log("muted", text=t)
+    if mode == "hold":
+        return S["pre_text"].append(t)
+    log("said", text=t)
+    await emit({"ai": t})
+
+
+def on_interrupted() -> None:
+    if S["spk"]:
+        S["spk"].clear()
+    S["pre_audio"].clear()
+    S["pre_text"].clear()
+    log("interrupted")
+
+
+async def on_turn_end() -> None:
+    await flush_pre()
+    S["after_tool"] = False
+    S["mute"] = False
+    log("turn", audio_sent_bytes=S["sent"], audio_got_bytes=S["got"])
+
+
+async def on_call(g, fc: dict) -> None:
+    text = fc.get("args", {}).get("text", "")
+    log("gemini.call", name=fc["name"], text=text)
+    drop_held()
+    if fc["name"] == "btw":
+        asyncio.create_task(answer_btw(g, fc, text))
+        return
+    if S["spk"]:
+        S["spk"].add(chime())
+    asyncio.create_task(ask_claude(g, fc, text))
+
+
+async def on_content(c: dict) -> None:
+    for p in c.get("modelTurn", {}).get("parts", []):
+        if "inlineData" in p:
+            on_audio(base64.b64decode(p["inlineData"]["data"]))
+    if t := c.get("inputTranscription", {}).get("text"):
+        log("heard", text=t)
+        await emit({"me": t})
+    if t := c.get("outputTranscription", {}).get("text"):
+        await on_text(t)
+    if c.get("interrupted"):
+        on_interrupted()
+    if c.get("turnComplete"):
+        await on_turn_end()
+
+
 async def read(g) -> None:
     """Всё, что приходит от Gemini: голос — в колонки, расшифровки и вызовы — в журнал и очередь."""
     try:
@@ -247,53 +329,8 @@ async def read(g) -> None:
                 log("gemini.error", error=str(e["error"])[:500])
                 await emit({"error": str(e["error"])})
             for fc in e.get("toolCall", {}).get("functionCalls", []):
-                text = fc.get("args", {}).get("text", "")
-                log("gemini.call", name=fc["name"], text=text)
-                if S["pre_audio"] or S["pre_text"]:  # всё, что она сказала перед вызовом, не произносим
-                    log("dropped", chars=sum(len(x) for x in S["pre_text"]), audio_bytes=len(S["pre_audio"]))
-                S["pre_audio"].clear()
-                S["pre_text"].clear()
-                if fc["name"] == "say_to_claude" and S["spk"]:
-                    S["spk"].add(chime())
-                if fc["name"] == "btw":
-                    asyncio.create_task(answer_btw(g, fc, text))
-                    continue
-                asyncio.create_task(ask_claude(g, fc, text))
-            c = e.get("serverContent", {})
-            for p in c.get("modelTurn", {}).get("parts", []):
-                if "inlineData" in p and S["spk"]:
-                    pcm = base64.b64decode(p["inlineData"]["data"])
-                    S["got"] += len(pcm)
-                    if S["mute"]:  # после передачи запроса молчим до ответа
-                        pass
-                    elif S["after_tool"]:  # ответ на вызов функции — говорим сразу
-                        S["spk"].add(pcm)
-                    else:  # ход по вашей реплике: придерживаем до вызова функции или конца хода
-                        S["pre_audio"].extend(pcm)
-            if t := c.get("inputTranscription", {}).get("text"):
-                log("heard", text=t)
-                await emit({"me": t})
-            if t := c.get("outputTranscription", {}).get("text"):
-                if "<no speech" not in t and "{pause}" not in t:  # метка «молчу» от самой модели — не речь
-                    if S["mute"]:
-                        log("muted", text=t)
-                    elif S["after_tool"]:
-                        log("said", text=t)
-                        await emit({"ai": t})
-                    else:
-                        S["pre_text"].append(t)
-                else:
-                    log("silent")
-            if c.get("interrupted") and S["spk"]:
-                S["spk"].clear()
-                S["pre_audio"].clear()
-                S["pre_text"].clear()
-                log("interrupted")
-            if c.get("turnComplete"):
-                await flush_pre()
-                S["after_tool"] = False
-                S["mute"] = False
-                log("turn", audio_sent_bytes=S["sent"], audio_got_bytes=S["got"])
+                await on_call(g, fc)
+            await on_content(e.get("serverContent", {}))
     except Exception as ex:  # noqa: BLE001
         log("gemini.error", error=f"{type(ex).__name__}: {ex}")
         S["why"] = f"{type(ex).__name__}: {ex}"
@@ -325,56 +362,110 @@ async def quick(text: str) -> str:
     return res
 
 
-async def ask_claude(g, fc: dict, text: str) -> None:
-    """Неблокирующая передача: номер возвращается сразу. Поправка (replaces) заменяет прежний запрос: в очереди — подменяет его,
-    если Claude уже работает — его ответ будет отброшен, если уже ответил — поправка идёт следом как новый запрос."""
-    key = " ".join(text.lower().split())
-    for i, r in reqs.items():  # Gemini иногда зовёт функцию дважды подряд с тем же текстом — второй вызов не плодит запрос
-        if r.get("key") == key and time.monotonic() - r.get("at", 0) < 30 and r["state"] in ("queued", "served"):
-            log("ask.duplicate", id=i, text=text)
-            try:
-                await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": f"Запрос №{i} уже передан. Молчи."}}]}}))
-            except Exception:  # noqa: BLE001
-                pass
-            return
+async def reply_tool(g, fc: dict, result: str) -> None:
+    """Результат вызова функции для Gemini; оборвавшийся сокет не ошибка."""
+    try:
+        await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": result}}]}}))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def normalize(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def find_duplicate(text: str) -> int | None:
+    """Gemini иногда зовёт функцию дважды подряд с тем же текстом: возвращает номер уже переданного запроса."""
+    key = normalize(text)
+    now = time.monotonic()
+    return next((i for i, r in reqs.items() if r["key"] == key and now - r["at"] < 30 and r["state"] in ("queued", "served")), None)
+
+
+SUPERSEDED_NOTE = {
+    "queued": " Прежний запрос №{old} заменён.",
+    "served": " Claude уже работает над №{old}: его ответ не озвучу, ответ придёт на №{n}.",
+}
+
+
+def register_request(text: str, replaces) -> tuple[int, str]:
+    """Новый запрос к основной сессии. Поправка (replaces) заменяет прежний: в очереди — подменяет его, в работе — его ответ будет отброшен,
+    уже отвеченный остаётся как был, а поправка идёт следом."""
     n = next(ids)
-    replaces = fc.get("args", {}).get("replaces")
     old = reqs.get(replaces) if isinstance(replaces, int) else None
     note = ""
     if old:
+        note = SUPERSEDED_NOTE.get(old["state"], "").format(old=replaces, n=n)
         if old["state"] == "queued":
             inbox[:] = [i for i in inbox if i["id"] != replaces]
-            note = f" Прежний запрос №{replaces} заменён."
-        elif old["state"] == "served":
-            note = f" Claude уже работает над №{replaces}: его ответ не озвучу, ответ придёт на №{n}."
-        old["state"] = "superseded" if old["state"] != "answered" else old["state"]
-    reqs[n] = {"text": text, "state": "queued", "replaces": replaces if old else None, "key": key, "at": time.monotonic()}
+        if old["state"] != "answered":
+            old["state"] = "superseded"
+    reqs[n] = {"text": text, "state": "queued", "replaces": replaces if old else None, "key": normalize(text), "at": time.monotonic()}
     inbox.append({"id": n, "text": text, "replaces": reqs[n]["replaces"]})
     log("ask", id=n, text=text, replaces=reqs[n]["replaces"])
+    return n, note
+
+
+async def ask_claude(g, fc: dict, text: str) -> None:
+    """Неблокирующая передача: номер возвращается сразу, ответ придёт позже сообщением."""
+    if (dup := find_duplicate(text)) is not None:
+        log("ask.duplicate", id=dup, text=text)
+        return await reply_tool(g, fc, f"Запрос №{dup} уже передан. Молчи.")
+    n, note = register_request(text, fc.get("args", {}).get("replaces"))
     await emit({"ask": text, "id": n, "replaces": reqs[n]["replaces"]})
     S["mute"] = True  # остаток этого хода не озвучиваем: ждём ответ молча
-    res = f"Запрос №{n} передан.{note} Молчи. Если человек продолжит говорить по этой теме, вызови say_to_claude с replaces={n} и полным текстом."
-    try:
-        await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
-    except Exception:  # noqa: BLE001
-        pass
+    await reply_tool(g, fc, f"Запрос №{n} передан.{note} Молчи. Если человек продолжит говорить по этой теме, вызови say_to_claude с replaces={n} и полным текстом.")
 
 
 async def answer_btw(g, fc: dict, text: str) -> None:
     res = await quick(text)
     S["after_tool"] = True
-    try:
-        await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
-    except Exception:  # noqa: BLE001
-        pass
+    await reply_tool(g, fc, res)
 
 
 def chunk_msg(pcm: bytes) -> dict:
     return {"realtimeInput": {"audio": {"mimeType": "audio/pcm;rate=16000", "data": base64.b64encode(pcm).decode()}}}
 
 
+def is_loud(b: bytes) -> bool:
+    return float(np.sqrt(np.mean(np.frombuffer(b, dtype=np.int16).astype(np.float32) ** 2))) > LOUD
+
+
+class Gate:
+    """Шлём в Gemini только пока есть речь (тишина стоит как речь); перед речью — немного предыстории, после — пауза на размышление."""
+
+    def __init__(self) -> None:
+        self.talking, self.quiet, self.pre = False, 0, deque(maxlen=PRE)
+
+    async def start(self) -> None:
+        self.talking = True
+        log("mic.speech.start")
+        await emit({"state": "слышу вас"})
+        for p in self.pre:
+            await live_send(chunk_msg(p))
+        self.pre.clear()
+
+    async def end(self) -> None:
+        self.talking = False
+        log("mic.speech.end", pause_ms=PAUSE_MS)
+        await live_send({"realtimeInput": {"audioStreamEnd": True}})
+        await emit({"state": "жду ответа"})
+
+    async def feed(self, b: bytes) -> None:
+        if is_loud(b):
+            if not self.talking:
+                await self.start()
+            self.quiet = 0
+            return await live_send(chunk_msg(b))
+        if not self.talking:
+            return self.pre.append(b)
+        await live_send(chunk_msg(b))
+        self.quiet += 1
+        if self.quiet > HANG:
+            await self.end()
+
+
 async def mic_loop() -> None:
-    """Микрофон компьютера → Gemini, только пока есть речь: тишина стоит как речь."""
+    """Микрофон компьютера → Gemini через ворота речи."""
     loop, q = asyncio.get_running_loop(), asyncio.Queue()
 
     def cb(indata, _frames, _time, _status) -> None:
@@ -383,40 +474,19 @@ async def mic_loop() -> None:
         stream = sd.RawInputStream(samplerate=16000, channels=1, dtype="int16", blocksize=1600, callback=cb)
         stream.start()
     except Exception as ex:  # noqa: BLE001
-        await emit({"error": f"микрофон: {type(ex).__name__}: {ex}"})
-        return
+        return await emit({"error": f"микрофон: {type(ex).__name__}: {ex}"})
     log("mic.start", duplex=DUPLEX)
     await emit({"state": "микрофон слушает"})
-    talking, quiet, pre = False, 0, deque(maxlen=PRE)
+    gate = Gate()
     while True:
         b = await q.get()
         if S["spk"] and S["spk"].busy and not DUPLEX:  # Gemini говорит: свой голос из колонок не слушаем
-            pre.clear()
+            gate.pre.clear()
             continue
-        loud = float(np.sqrt(np.mean(np.frombuffer(b, dtype=np.int16).astype(np.float32) ** 2))) > LOUD
         try:
-            if loud:
-                quiet = 0
-                if not talking:
-                    talking = True
-                    log("mic.speech.start")
-                    await emit({"state": "слышу вас"})
-                    for p in pre:
-                        await live_send(chunk_msg(p))
-                    pre.clear()
-                await live_send(chunk_msg(b))
-            elif talking:
-                await live_send(chunk_msg(b))
-                quiet += 1
-                if quiet > HANG:
-                    talking = False
-                    log("mic.speech.end", pause_ms=PAUSE_MS)
-                    await live_send({"realtimeInput": {"audioStreamEnd": True}})
-                    await emit({"state": "жду ответа"})
-            else:
-                pre.append(b)
+            await gate.feed(b)
         except Exception as ex:  # noqa: BLE001
-            talking = False
+            gate.talking = False
             await emit({"error": f"отправка в Gemini: {type(ex).__name__}: {ex}"})
             await asyncio.sleep(2)
 
@@ -476,6 +546,7 @@ async def nxt(request: web.Request) -> web.Response:
 async def busy(request: web.Request) -> web.Response:
     S["busy"] = bool((await request.json()).get("busy"))
     log("busy", busy=S["busy"])
+    await emit({"state": "Claude занят" if S["busy"] else f"Claude свободен, в очереди {len(inbox)}"})
     return web.Response(text="ok")
 
 
@@ -520,17 +591,7 @@ async def audio(request: web.Request) -> web.Response:
 async def say(request: web.Request) -> web.Response:
     """Запрос текстом, как вызов say_to_claude: {"text", "replaces"?}; для отладки без голоса."""
     body = await request.json()
-    n = next(ids)
-    replaces = body.get("replaces")
-    old = reqs.get(replaces)
-    if old:
-        if old["state"] == "queued":
-            inbox[:] = [i for i in inbox if i["id"] != replaces]
-        if old["state"] != "answered":
-            old["state"] = "superseded"
-    reqs[n] = {"text": body.get("text", ""), "state": "queued", "replaces": replaces if old else None}
-    inbox.append({"id": n, "text": body.get("text", ""), "replaces": reqs[n]["replaces"]})
-    log("ask", id=n, text=body.get("text", ""), replaces=reqs[n]["replaces"])
+    n, _ = register_request(body.get("text", ""), body.get("replaces"))
     return web.json_response({"id": n})
 
 
@@ -628,7 +689,7 @@ function connect(){
  const handle=m=>{
   if(m.history){log.innerHTML='';cur={};m.history.forEach(handle);return}
   if(m.me)line('me','Вы: ',m.me);if(m.ai)line('ai','Gemini: ',m.ai);
-  if(m.ask)add('ask','→ Claude: '+m.ask);if(m.answer)add('ask','← Claude: '+m.answer);
+  if(m.ask)add('ask','→ Claude №'+m.id+(m.replaces?' (поправка к №'+m.replaces+')':'')+': '+m.ask);if(m.answer)add('ask','← Claude №'+m.id+': '+m.answer);
   if(m.btwq)add('ask','⚡ /btw: '+m.btwq);if(m.btwa)add('ask','⚡ ← '+m.btwa);
   if(m.error)add('err',m.error);if(m.state)add('state','· '+m.state)};
  ws.onmessage=ev=>handle(JSON.parse(ev.data));

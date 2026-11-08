@@ -24,7 +24,6 @@ const TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).s
 let voiceTurn = false;
 let currentId = 0; // номер запроса, над которым идёт ход
 let started = false;
-let displaced = false;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -89,6 +88,18 @@ async function launch($, options): Promise<boolean> {
   return false;
 }
 
+// Ответ сервиса на опрос: 204 — пусто, жмём паузу; 200 — вопрос, вставляем в чат как сообщение человека; иное — ошибка, ждём дольше.
+async function deliver($, r: { status: number; text: string }): Promise<void> {
+  if (r.status === 204) return sleep(POLL_MS);
+  if (r.status !== 200 || !r.text) return sleep(RETRY_MS);
+  const { id, text, replaces } = JSON.parse(r.text);
+  if (!text) return;
+  voiceTurn = true;
+  currentId = id;
+  const fix = replaces ? "(поправка к прежнему запросу, новый текст полный) " : "";
+  await $.prompt.submit({ text: `${MARK} ${fix}${text}`, asUser: true });
+}
+
 export function register(on, options) {
   on("session.start", async ($, e, next) => {
     const result = await next(e);
@@ -115,31 +126,15 @@ export function register(on, options) {
     // Сервис не отвечает несколько раз подряд — поднимаем его заново.
     void (async () => {
       let down = 0;
-      while (!displaced) {
-        if (await stale($)) break; // сервис теперь у другого экземпляра плагина или остановлен: молча уходим
+      for (;;) {
+        if (await stale($)) return; // сервис теперь у другого экземпляра плагина или остановлен: молча уходим
         try {
-          const r = await call($, "/next?wait=1");
+          await deliver($, await call($, "/next?wait=1"));
           down = 0;
-          if (r.status === 200 && r.text) {
-            const { id, text, replaces } = JSON.parse(r.text);
-            if (text) {
-              voiceTurn = true;
-              currentId = id;
-              const fix = replaces ? "(поправка к прежнему запросу, новый текст полный) " : "";
-              await $.prompt.submit({ text: `${MARK} ${fix}${text}`, asUser: true });
-            }
-          } else if (r.status === 204) {
-            await sleep(POLL_MS);
-          } else {
-            await sleep(RETRY_MS);
-          }
         } catch {
           await sleep(RETRY_MS);
-          if (await stale($)) {
-            displaced = true;
-            return;
-          }
-          if (++down >= 3 && !healing && !displaced) {
+          if (await stale($)) return;
+          if (++down >= 3 && !healing) {
             healing = true;
             down = 0;
             await launch($, options).catch(() => false);
@@ -151,11 +146,12 @@ export function register(on, options) {
 
     // Быстрые вопросы /btw: свой цикл, не ждёт основного хода.
     void (async () => {
-      while (!displaced) {
+      for (;;) {
+        if (await stale($)) return;
         try {
           const r = await call($, "/quick");
           if (r.status === 200 && r.text) void btw($, JSON.parse(r.text));
-          else if (r.status !== 204) await sleep(RETRY_MS);
+          else await sleep(r.status === 204 ? POLL_MS : RETRY_MS);
         } catch {
           await sleep(RETRY_MS);
         }
