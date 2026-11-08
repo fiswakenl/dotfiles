@@ -392,6 +392,7 @@ def register_request(text: str, replaces) -> tuple[int, str]:
     уже отвеченный остаётся как был, а поправка идёт следом."""
     n = next(ids)
     old = reqs.get(replaces) if isinstance(replaces, int) else None
+    abort = bool(old) and old["state"] == "served"  # Claude уже работает над прежним: плагин прервёт его ход и вставит поправку сразу
     note = ""
     if old:
         note = SUPERSEDED_NOTE.get(old["state"], "").format(old=replaces, n=n)
@@ -399,7 +400,6 @@ def register_request(text: str, replaces) -> tuple[int, str]:
             inbox[:] = [i for i in inbox if i["id"] != replaces]
         if old["state"] != "answered":
             old["state"] = "superseded"
-    abort = bool(old) and old["state"] == "served"  # Claude уже работает над прежним: плагин прервёт его ход и вставит поправку сразу
     reqs[n] = {"text": text, "state": "queued", "replaces": replaces if old else None, "key": normalize(text), "at": time.monotonic()}
     inbox.append({"id": n, "text": text, "replaces": reqs[n]["replaces"], "abort": abort})
     log("ask", id=n, text=text, replaces=reqs[n]["replaces"])
