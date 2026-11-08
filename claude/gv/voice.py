@@ -16,7 +16,9 @@ Gemini не отвечает от себя на рабочее: пересказ
     GET  /next      вопрос для Claude {"id", "text"}; ждёт, пока он появится и Claude свободен; 204 — пока ничего
     POST /busy      {"busy": true|false} — Claude занят/свободен
     POST /answer    тело — ответ Claude текстом; Gemini озвучит
-    POST /btw       {"text"} — вставить реплику прямо Gemini, мимо Claude (он занят — его не трогаем)
+    POST /btw       {"text"} — быстрый вопрос Claude по разговору, ответ в теле; основной ход не прерывается
+    GET  /quick     быстрый вопрос для ветки разговора {"id", "text"} (плагин; идёт и пока основной ход занят)
+    POST /quickanswer?id=N  тело — ответ ветки
     POST /say       {"text"} — то же, что say_to_claude, но текстом (отладка без голоса)
     POST /audio     речь PCM 16 бит, 16 кГц в сокет Gemini вместо микрофона (проверка через TTS)
     GET  /last      последний ответ Claude, пришедший в /answer
@@ -56,6 +58,8 @@ PUBLIC = {"/", "/ws", "/takeover"}  # страница, журнал и прос
 
 ids = itertools.count(1)
 inbox: list[dict] = []  # вопросы Gemini → Claude
+quick_q: list[dict] = []  # быстрые вопросы /btw → ветка разговора Claude (идут и пока основной ход занят)
+quick_f: dict[int, asyncio.Future] = {}  # ответы на них
 viewers: set[web.WebSocketResponse] = set()  # открытые страницы-журналы
 S = {"last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
 
@@ -63,6 +67,10 @@ TOOLS = [{"functionDeclarations": [{
     "name": "say_to_claude",
     "description": "Передать Claude Code то, что сказал человек: вопрос, просьба или поручение, своими словами, самодостаточно и коротко",
     "parameters": {"type": "OBJECT", "properties": {"text": {"type": "STRING", "description": "Что сказал человек, ясным письменным текстом"}},
+                   "required": ["text"]}}, {
+    "name": "btw",
+    "description": "Мгновенный вопрос Claude Code по тому, что уже есть в разговоре сессии: ответ за пару секунд, пока основная работа идёт. Не для поручений и не для того, что требует смотреть файлы",
+    "parameters": {"type": "OBJECT", "properties": {"text": {"type": "STRING", "description": "Короткий вопрос ясным письменным текстом"}},
                    "required": ["text"]}}]}]
 
 
@@ -161,6 +169,9 @@ async def read(g) -> None:
                 await emit({"error": str(e["error"])})
             for fc in e.get("toolCall", {}).get("functionCalls", []):
                 text = fc.get("args", {}).get("text", "")
+                if fc["name"] == "btw":
+                    asyncio.create_task(answer_btw(g, fc, text))
+                    continue
                 inbox.append({"id": next(ids), "text": text})
                 await emit({"ask": text})
                 if S["busy"]:
@@ -185,6 +196,30 @@ async def read(g) -> None:
         if S["live"] is g:
             S["live"] = None
         await emit({"state": "сокет Gemini закрыт"})
+
+
+async def quick(text: str) -> str:
+    """Быстрый вопрос Claude: плагин спрашивает ветку разговора, основной ход не трогаем."""
+    n = next(ids)
+    fut = asyncio.get_running_loop().create_future()
+    quick_f[n] = fut
+    quick_q.append({"id": n, "text": text})
+    await emit({"btwq": text})
+    try:
+        res = await asyncio.wait_for(fut, 60)
+    except TimeoutError:
+        res = "Claude не успел ответить."
+    quick_f.pop(n, None)
+    await emit({"btwa": res})
+    return res
+
+
+async def answer_btw(g, fc: dict, text: str) -> None:
+    res = await quick(text)
+    try:
+        await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def chunk_msg(pcm: bytes) -> dict:
@@ -309,9 +344,24 @@ async def last(_: web.Request) -> web.Response:
 
 
 async def btw(request: web.Request) -> web.Response:
-    text = (await request.json()).get("text", "").strip()
-    if text:
-        await to_gemini(f"[Побочная реплика, Claude не трогаем] {text}")
+    """Быстрый вопрос Claude вручную: тело {"text"}; ответ приходит в ответе на запрос."""
+    return web.Response(text=await quick((await request.json()).get("text", "").strip()))
+
+
+async def quick_next(_: web.Request) -> web.Response:
+    """Плагин забирает быстрый вопрос; идёт и пока основной ход занят."""
+    end = time.monotonic() + NEXT_WAIT
+    while time.monotonic() < end:
+        if quick_q:
+            return web.json_response(quick_q.pop(0))
+        await asyncio.sleep(0.1)
+    return web.Response(status=204)
+
+
+async def quick_answer(request: web.Request) -> web.Response:
+    fut = quick_f.get(int(request.query["id"]))
+    if fut and not fut.done():
+        fut.set_result((await request.read()).decode().strip())
     return web.Response(text="ok")
 
 
@@ -369,7 +419,7 @@ function connect(){
  ws.onopen=()=>st.textContent='журнал подключён · звук и микрофон — на компьютере';
  ws.onmessage=ev=>{const m=JSON.parse(ev.data);
   if(m.me)line('me','Вы: ',m.me);if(m.ai)line('ai','Gemini: ',m.ai);
-  if(m.ask)add('ask','→ Claude: '+m.ask);if(m.error)add('err',m.error);if(m.state)add('state','· '+m.state)};
+  if(m.ask)add('ask','→ Claude: '+m.ask);if(m.btwq)add('ask','⚡ /btw: '+m.btwq);if(m.btwa)add('ask','⚡ ← '+m.btwa);if(m.error)add('err',m.error);if(m.state)add('state','· '+m.state)};
  ws.onclose=()=>{st.textContent='сессия закрыта, жду новую…';setTimeout(connect,2000)};}
 connect();
 </script>"""
@@ -383,7 +433,7 @@ def main() -> None:
     app = web.Application(middlewares=[guard])
     app.on_startup.append(start)
     app.add_routes([web.get("/", index), web.get("/ws", viewer), web.get("/next", nxt), web.post("/busy", busy),
-                    web.post("/answer", answer), web.post("/btw", btw), web.post("/say", say), web.post("/audio", audio),
+                    web.post("/answer", answer), web.post("/btw", btw), web.get("/quick", quick_next), web.post("/quickanswer", quick_answer), web.post("/say", say), web.post("/audio", audio),
                     web.get("/last", last), web.post("/ping", ping), web.post("/quit", quit_), web.post("/takeover", takeover)])
     web.run_app(app, host="127.0.0.1", port=PORT, print=None)
 

@@ -31,6 +31,23 @@ const call = ($, path: string, init: { method?: string; body?: string } = {}) =>
 const post = ($, path: string, body?: unknown) =>
   call($, path, { method: "POST", body: body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body) });
 
+// Быстрый вопрос /btw: ветка разговора отвечает по тому, что в нём уже есть, пока основной ход занят; инструменты не нужны.
+const BTW_PROMPT =
+  "Служебный запрос голосового плагина gv, не задача из разговора. Основная работа идёт своим чередом: " +
+  "не продолжай её и не меняй, инструменты не вызывай. Ответь на быстрый вопрос ниже по разговору выше, " +
+  "как будто говоришь вслух: 1–3 короткие фразы простыми словами, без списков и разметки. " +
+  "Если в разговоре ответа нет, так и скажи.";
+
+async function btw($, q: { id: number; text: string }): Promise<void> {
+  let text = "Не получилось ответить.";
+  try {
+    const reply = await $.model.fork({ prompt: `${BTW_PROMPT}\n\n<вопрос>\n${q.text}\n</вопрос>` });
+    if (reply.reason === "nothing-to-fork") text = "В сессии пока нечего вспомнить: разговор только начался.";
+    else if (reply.isAnswered && reply.text.trim()) text = reply.text.trim();
+  } catch {}
+  await post($, `/quickanswer?id=${q.id}`, text).catch(() => {});
+}
+
 export function register(on, options) {
   on("session.start", async ($, e, next) => {
     const result = await next(e);
@@ -96,6 +113,19 @@ export function register(on, options) {
           } else if (r.status !== 204) {
             await sleep(RETRY_MS);
           }
+        } catch {
+          await sleep(RETRY_MS);
+        }
+      }
+    })();
+
+    // Быстрые вопросы /btw: свой цикл, не ждёт основного хода.
+    void (async () => {
+      while (!displaced) {
+        try {
+          const r = await call($, "/quick");
+          if (r.status === 200 && r.text) void btw($, JSON.parse(r.text));
+          else if (r.status !== 204) await sleep(RETRY_MS);
         } catch {
           await sleep(RETRY_MS);
         }
