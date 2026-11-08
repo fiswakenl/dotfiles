@@ -7,19 +7,28 @@
       "type": "string",
       "title": "Чистка промпта",
       "description": "off — не вмешиваться; auto — почистить и отправить; input — почистить в поле по кнопке",
-      "default": "auto"
+      "default": "auto",
+      "options": [
+        "off",
+        "auto",
+        "input"
+      ]
     },
     "delivery": {
       "type": "string",
       "title": "Как отдавать почищенный промпт",
       "description": "rewrite — подменить до отправки: в терминале чисто, но remote control показывает сырой; resend — отменить и отправить заново: remote control видит чистый, в терминале строка об отмене",
-      "default": "resend"
+      "default": "resend",
+      "options": [
+        "rewrite",
+        "resend"
+      ]
     },
     "model": {
       "type": "string",
       "title": "Модель чистильщика",
       "description": "Чем причёсывать реплику",
-      "default": "claude-sonnet-5"
+      "default": "claude-opus-5-5"
     }
   }
 }

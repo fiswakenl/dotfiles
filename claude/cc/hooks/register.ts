@@ -1,11 +1,8 @@
 // Чистка надиктованного промпта перед отправкой.
 //
-// Настройки — /config или ~/.claude/settings.json → pluginConfigs.<плагин>.options
-// (запущен через --plugin-dir — ключ «cc@inline», иначе «cc»):
-//   mode      off — не вмешиваться; auto — почистить и отправить (единственный, что
-//             работает с телефона); input — Enter не трогать, чистить по кнопке над полем
-//   delivery  rewrite — подменить до отправки; resend — уронить и отправить заново
-//   model     чем чистить
+// Настройки — userConfig в plugin.json: там значения, дефолты и описания. Движок
+// подставляет дефолты и отбрасывает значения не из списка, поэтому здесь options
+// читаются как есть. Хранятся в ~/.claude/settings.json → pluginConfigs."cc@inline".
 // Промпт чистильщика — prompt.md в корне плагина. Читается на каждой чистке:
 // правку видно сразу. Нет файла — реплика уходит как есть.
 //
@@ -35,7 +32,7 @@ const LOG_KEEP = 500;
 export function register(on, options) {
   on("prompt.submit", async ($, e, next) => {
     if (!e.text.trim() || !TYPED.includes(e.origin?.kind ?? "composer")) return next(e);
-    if (mode(options) !== "auto") return next(e);
+    if (options.mode !== "auto") return next(e);
 
     // Поле после Enter пустое — крутим в нём, пока думает чистильщик, и убираем
     // за собой. Начал печатать следующий промпт — не мешаем.
@@ -44,7 +41,7 @@ export function register(on, options) {
     const text = await cleaning;
     if (untouched) await $.prompt.fill({ text: "" });
     if (!text || text === e.text) return next(e);
-    if (delivery(options) === "rewrite") return next({ ...e, text });
+    if (options.delivery === "rewrite") return next({ ...e, text });
 
     // resend: remote control рисует то, что отправил сам, и подмену не видит.
     // Сырой промпт роняем, чистый отправляем от плагина. Сразу из хука submit не
@@ -59,7 +56,7 @@ export function register(on, options) {
   // Кнопка над полем — только в input: в auto чистит сам Enter, в off не чистит никто.
   // Матчер обязателен — без него хук на компонент не подписывается.
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
-    if (mode(options) !== "input") return next(e);
+    if (options.mode !== "input") return next(e);
     const { Button } = $.ui.resolve(e);
     return Button({
       key: "clean",
@@ -101,7 +98,7 @@ async function spin($, until: Promise<unknown>): Promise<boolean> {
 // в системном промпте: без него «убери тот скилл» не раскрыть.
 // Любая осечка — null, и уходит исходный текст: текст дороже чистки.
 async function clean($, text: string, options): Promise<string | null> {
-  const who = model(options);
+  const who = options.model;
   try {
     const reply = await $.model.complete({
       model: who,
@@ -156,16 +153,4 @@ async function log($, entry): Promise<void> {
                    JSON.stringify({ at: new Date().toISOString(), ...entry })];
     await $.fs.write(file, lines.slice(-LOG_KEEP).join("\n") + "\n");
   } catch {}
-}
-
-function mode(options): string {
-  return ["off", "auto", "input"].includes(options?.mode) ? options.mode : "off";
-}
-
-function delivery(options): string {
-  return options?.delivery === "rewrite" ? "rewrite" : "resend";
-}
-
-function model(options): string {
-  return typeof options?.model === "string" && options.model ? options.model : "claude-sonnet-5";
 }
