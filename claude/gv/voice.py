@@ -1,17 +1,26 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["aiohttp", "websockets>=15", "python-socks[asyncio]"]
+# dependencies = ["aiohttp", "websockets>=15", "python-socks[asyncio]", "sounddevice", "numpy"]
 # ///
 """Голосовой мост Gemini Live ⇄ сессия Claude Code (плагин gv). Запускает плагин, сам не нужен.
 
-Браузер (микрофон и динамик) ⇄ этот сервис ⇄ Gemini Live. Gemini не отвечает от себя на рабочее: пересказывает слова человека
-функцией say_to_claude, ответ Claude приходит ей текстом и озвучивается.
+Микрофон и колонки — самого компьютера (sounddevice): сервис слушает микрофон, а голос Gemini играет из колонок.
+Страница http://127.0.0.1:8790 — только журнал разговора, как devtools: ни звука, ни микрофона в браузере нет.
+Сокет Gemini открывается, когда есть что сказать или услышать, и закрывается после простоя (IDLE_CLOSE).
+Тишину в Gemini не шлём: она тарифицируется как речь. Пока Gemini говорит, микрофон не слушаем (эхо из колонок);
+GV_DUPLEX=1 — слушать всегда (в наушниках).
+
+Gemini не отвечает от себя на рабочее: пересказывает слова человека функцией say_to_claude, ответ Claude приходит ей текстом.
 
 Ручки для плагина (127.0.0.1:8790):
     GET  /next      вопрос для Claude {"id", "text"}; ждёт, пока он появится и Claude свободен; 204 — пока ничего
     POST /busy      {"busy": true|false} — Claude занят/свободен
     POST /answer    тело — ответ Claude текстом; Gemini озвучит
     POST /btw       {"text"} — вставить реплику прямо Gemini, мимо Claude (он занят — его не трогаем)
+    POST /say       {"text"} — то же, что say_to_claude, но текстом (отладка без голоса)
+    POST /audio     речь PCM 16 бит, 16 кГц в сокет Gemini вместо микрофона (проверка через TTS)
+    GET  /last      последний ответ Claude, пришедший в /answer
+    POST /quit      сессия закрылась — сервис выходит
     POST /ping      плагин жив; пропал на PING_LOST секунд — сервис выходит сам
 
 Ключ и прокси Gemini — ~/.config/gemini.env.
@@ -22,21 +31,29 @@ import itertools
 import json
 import os
 import time
+from collections import deque
 from pathlib import Path
 
+import numpy as np
+import sounddevice as sd
 import websockets
-from aiohttp import WSMsgType, web
+from aiohttp import web
 
 HERE = Path(__file__).resolve().parent
 PORT = int(os.environ.get("GV_PORT", 8790))
+DUPLEX = os.environ.get("GV_DUPLEX") == "1"
 GEMINI_WS = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 MODEL = "models/gemini-3.8-live"
 NEXT_WAIT = 25  # секунд ждёт /next, потом 204: плагин спрашивает снова
 PING_LOST = 90  # секунд без /ping — выходим
+IDLE_CLOSE = 180  # секунд без речи и звука — закрываем сокет Gemini (откроется заново сам)
+LOUD = 500  # уровень (RMS int16), с которого блок звука считается речью
+HANG, PRE = 10, 3  # блоков по 100 мс: сколько тишины держим после речи и сколько предыстории шлём перед ней
 
 ids = itertools.count(1)
 inbox: list[dict] = []  # вопросы Gemini → Claude
-S = {"busy": False, "ping": time.monotonic(), "live": None, "later": []}  # live — сокет Gemini; later — тексты, пока сессии нет
+viewers: set[web.WebSocketResponse] = set()  # открытые страницы-журналы
+S = {"last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
 
 TOOLS = [{"functionDeclarations": [{
     "name": "say_to_claude",
@@ -60,71 +77,181 @@ def system_text() -> str:
     return "\n\n".join(parts)
 
 
-async def to_gemini(text: str) -> None:
-    """Текст в живую сессию Gemini (запускает её ответ); нет сессии — ждёт до подключения."""
-    g = S["live"]
-    if g is None:
-        S["later"].append(text)
-        return
-    await g.send(json.dumps({"realtimeInput": {"text": text}}))
+async def emit(obj: dict) -> None:
+    """Событие всем открытым журналам."""
+    for v in list(viewers):
+        try:
+            await v.send_json(obj)
+        except Exception:  # noqa: BLE001
+            viewers.discard(v)
 
 
-async def talk(request: web.Request) -> web.WebSocketResponse:
-    """Браузер ⇄ Gemini Live: речь (PCM 16 кГц) туда, голос (PCM 24 кГц) и расшифровки обратно. Звук приходит только пока человек говорит."""
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-    env = gemini_env()
-    setup = {"model": MODEL, "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {"languageCode": "ru-RU"}},
-             "systemInstruction": {"parts": [{"text": system_text()}]}, "tools": TOOLS,
-             "inputAudioTranscription": {}, "outputAudioTranscription": {}}
-    async with websockets.connect(GEMINI_WS, additional_headers={"x-goog-api-key": env["GEMINI_API_KEY"]},
-                                  proxy=env["GEMINI_PROXY"], max_size=None) as g:
+class Speaker:
+    """Колонки компьютера: голос Gemini (PCM 24 кГц) копится в буфере, звуковая карта забирает его сама."""
+
+    def __init__(self) -> None:
+        self.buf = bytearray()
+        self.until = 0.0
+        self.stream = sd.RawOutputStream(samplerate=24000, channels=1, dtype="int16", callback=self._fill)
+        self.stream.start()
+
+    def _fill(self, outdata, frames, _time, _status) -> None:
+        n = frames * 2
+        chunk = bytes(self.buf[:n])
+        del self.buf[:n]
+        outdata[:len(chunk)] = chunk
+        outdata[len(chunk):] = bytes(n - len(chunk))
+
+    def add(self, pcm: bytes) -> None:
+        self.buf.extend(pcm)
+        self.until = time.monotonic() + len(self.buf) / 48000 + 0.5  # хвост: эхо от колонок затихает
+
+    def clear(self) -> None:
+        self.buf.clear()
+        self.until = 0.0
+
+    @property
+    def busy(self) -> bool:
+        return bool(self.buf) or time.monotonic() < self.until
+
+
+def touch() -> None:
+    S["touch"] = time.monotonic()
+
+
+async def ensure_live():
+    """Сокет Gemini: открыт — он; нет — открываем."""
+    async with S["lock"]:
+        if S["live"] is not None:
+            return S["live"]
+        env = gemini_env()
+        setup = {"model": MODEL, "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {"languageCode": "ru-RU"}},
+                 "systemInstruction": {"parts": [{"text": system_text()}]}, "tools": TOOLS,
+                 "inputAudioTranscription": {}, "outputAudioTranscription": {}}
+        g = await websockets.connect(GEMINI_WS, additional_headers={"x-goog-api-key": env["GEMINI_API_KEY"]}, proxy=env["GEMINI_PROXY"], max_size=None)
         await g.send(json.dumps({"setup": setup}))
         S["live"] = g
-        for t in S["later"]:
-            await to_gemini(t)
-        S["later"].clear()
+        touch()
+        asyncio.create_task(read(g))
+        await emit({"state": "сокет Gemini открыт"})
+        return g
 
-        async def up() -> None:
-            async for m in ws:
-                if m.type == WSMsgType.BINARY:
-                    await g.send(json.dumps({"realtimeInput": {"audio": {"mimeType": "audio/pcm;rate=16000", "data": base64.b64encode(m.data).decode()}}}))
-                elif m.type == WSMsgType.TEXT and m.data == "end":  # человек замолчал: тишину не шлём, сообщаем конец речи
-                    await g.send(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
 
-        async def down() -> None:
-            async for raw in g:
-                e = json.loads(raw)
-                if "error" in e:
-                    await ws.send_json({"error": str(e["error"])})
-                for fc in e.get("toolCall", {}).get("functionCalls", []):
-                    text = fc.get("args", {}).get("text", "")
-                    inbox.append({"id": next(ids), "text": text})
-                    await ws.send_json({"ask": text})
-                    if S["busy"]:
-                        res = ("Claude сейчас занят прошлым запросом, этот в очереди и уйдёт, когда он закончит: его не перебиваем. "
-                               "Скажи это одной фразой и дальше поддерживай разговор сама; ответ придёт сообщением «[Ответ Claude]».")
-                    else:
-                        res = "Передано Claude, он работает. Скажи одной фразой, что передала; ответ придёт сообщением «[Ответ Claude]»."
-                    await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
-                c = e.get("serverContent", {})
-                for p in c.get("modelTurn", {}).get("parts", []):
-                    if "inlineData" in p:
-                        await ws.send_bytes(base64.b64decode(p["inlineData"]["data"]))
-                if t := c.get("inputTranscription", {}).get("text"):
-                    await ws.send_json({"me": t})
-                if t := c.get("outputTranscription", {}).get("text"):
-                    await ws.send_json({"ai": t})
-                if c.get("interrupted"):
-                    await ws.send_json({"interrupted": 1})
+async def live_send(obj: dict) -> None:
+    g = await ensure_live()
+    touch()
+    await g.send(json.dumps(obj))
 
-        tasks = [asyncio.create_task(up()), asyncio.create_task(down())]
-        try:
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        finally:
+
+async def to_gemini(text: str) -> None:
+    await live_send({"realtimeInput": {"text": text}})
+
+
+async def read(g) -> None:
+    """Всё, что приходит от Gemini: голос — в колонки, расшифровки и вызовы — в журнал и очередь."""
+    try:
+        async for raw in g:
+            touch()
+            e = json.loads(raw)
+            if "error" in e:
+                await emit({"error": str(e["error"])})
+            for fc in e.get("toolCall", {}).get("functionCalls", []):
+                text = fc.get("args", {}).get("text", "")
+                inbox.append({"id": next(ids), "text": text})
+                await emit({"ask": text})
+                if S["busy"]:
+                    res = ("Claude сейчас занят прошлым запросом, этот в очереди и уйдёт, когда он закончит: его не перебиваем. "
+                           "Скажи это одной фразой и дальше поддерживай разговор сама; ответ придёт сообщением «[Ответ Claude]».")
+                else:
+                    res = "Передано Claude, он работает. Скажи одной фразой, что передала; ответ придёт сообщением «[Ответ Claude]»."
+                await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
+            c = e.get("serverContent", {})
+            for p in c.get("modelTurn", {}).get("parts", []):
+                if "inlineData" in p and S["spk"]:
+                    S["spk"].add(base64.b64decode(p["inlineData"]["data"]))
+            if t := c.get("inputTranscription", {}).get("text"):
+                await emit({"me": t})
+            if t := c.get("outputTranscription", {}).get("text"):
+                await emit({"ai": t})
+            if c.get("interrupted") and S["spk"]:
+                S["spk"].clear()
+    except Exception as ex:  # noqa: BLE001
+        await emit({"error": f"Gemini: {type(ex).__name__}: {ex}"})
+    finally:
+        if S["live"] is g:
             S["live"] = None
-            for t in tasks:
-                t.cancel()
+        await emit({"state": "сокет Gemini закрыт"})
+
+
+def chunk_msg(pcm: bytes) -> dict:
+    return {"realtimeInput": {"audio": {"mimeType": "audio/pcm;rate=16000", "data": base64.b64encode(pcm).decode()}}}
+
+
+async def mic_loop() -> None:
+    """Микрофон компьютера → Gemini, только пока есть речь: тишина стоит как речь."""
+    loop, q = asyncio.get_running_loop(), asyncio.Queue()
+
+    def cb(indata, _frames, _time, _status) -> None:
+        loop.call_soon_threadsafe(q.put_nowait, bytes(indata))
+    try:
+        stream = sd.RawInputStream(samplerate=16000, channels=1, dtype="int16", blocksize=1600, callback=cb)
+        stream.start()
+    except Exception as ex:  # noqa: BLE001
+        await emit({"error": f"микрофон: {type(ex).__name__}: {ex}"})
+        return
+    await emit({"state": "микрофон слушает"})
+    talking, quiet, pre = False, 0, deque(maxlen=PRE)
+    while True:
+        b = await q.get()
+        if S["spk"] and S["spk"].busy and not DUPLEX:  # Gemini говорит: свой голос из колонок не слушаем
+            pre.clear()
+            continue
+        loud = float(np.sqrt(np.mean(np.frombuffer(b, dtype=np.int16).astype(np.float32) ** 2))) > LOUD
+        try:
+            if loud:
+                quiet = 0
+                if not talking:
+                    talking = True
+                    await emit({"state": "слышу вас"})
+                    for p in pre:
+                        await live_send(chunk_msg(p))
+                    pre.clear()
+                await live_send(chunk_msg(b))
+            elif talking:
+                await live_send(chunk_msg(b))
+                quiet += 1
+                if quiet > HANG:
+                    talking = False
+                    await live_send({"realtimeInput": {"audioStreamEnd": True}})
+                    await emit({"state": "жду ответа"})
+            else:
+                pre.append(b)
+        except Exception as ex:  # noqa: BLE001
+            talking = False
+            await emit({"error": f"отправка в Gemini: {type(ex).__name__}: {ex}"})
+            await asyncio.sleep(2)
+
+
+async def idle_loop() -> None:
+    """Простой: сокет Gemini не держим впустую. Закрыт — откроется сам, когда нужен."""
+    while True:
+        await asyncio.sleep(10)
+        g = S["live"]
+        if g is not None and time.monotonic() - S["touch"] > IDLE_CLOSE and not S["busy"] and not (S["spk"] and S["spk"].busy):
+            await g.close()
+
+
+async def viewer(request: web.Request) -> web.WebSocketResponse:
+    """Журнал в браузере: только события, звук сюда не идёт."""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    viewers.add(ws)
+    await ws.send_json({"state": "сокет Gemini открыт" if S["live"] else "сокет Gemini закрыт, откроется, когда заговорите"})
+    try:
+        async for _ in ws:
+            pass
+    finally:
+        viewers.discard(ws)
     return ws
 
 
@@ -146,9 +273,35 @@ async def busy(request: web.Request) -> web.Response:
 
 async def answer(request: web.Request) -> web.Response:
     text = (await request.read()).decode().strip()
+    S["last"] = text
     if text:
         await to_gemini(f"[Ответ Claude] {text}\n\nПерескажи это человеку голосом своими словами, коротко и без списков.")
     return web.Response(text="ok")
+
+
+async def audio(request: web.Request) -> web.Response:
+    """Речь вместо микрофона (тело — PCM 16 бит, 16 кГц, моно): для проверки через TTS. Ответ играет из колонок, как обычно."""
+    pcm = await request.read()
+
+    async def play() -> None:
+        try:
+            for i in range(0, len(pcm), 3200):  # 100 мс, как в реальном времени
+                await live_send(chunk_msg(pcm[i:i + 3200]))
+                await asyncio.sleep(0.1)
+            await live_send({"realtimeInput": {"audioStreamEnd": True}})
+        except Exception as ex:  # noqa: BLE001
+            await emit({"error": f"/audio: {type(ex).__name__}: {ex}"})
+    asyncio.create_task(play())
+    return web.Response(text=f"ok {len(pcm) / 32000:.1f} с")
+
+
+async def say(request: web.Request) -> web.Response:
+    inbox.append({"id": next(ids), "text": (await request.json()).get("text", "")})
+    return web.Response(text="ok")
+
+
+async def last(_: web.Request) -> web.Response:
+    return web.Response(text=S["last"])
 
 
 async def btw(request: web.Request) -> web.Response:
@@ -158,62 +311,50 @@ async def btw(request: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 
+async def quit_(_: web.Request) -> web.Response:
+    asyncio.get_running_loop().call_later(0.3, lambda: os._exit(0))
+    return web.Response(text="ok")
+
+
 async def ping(_: web.Request) -> web.Response:
     S["ping"] = time.monotonic()
     return web.Response(text="ok")
 
 
-async def watchdog(_: web.Application) -> None:
-    async def run() -> None:
+async def start(_: web.Application) -> None:
+    S["lock"] = asyncio.Lock()
+    try:
+        S["spk"] = Speaker()
+    except Exception as ex:  # noqa: BLE001
+        print(f"колонки: {type(ex).__name__}: {ex}", flush=True)
+
+    async def watchdog() -> None:
         while True:
             await asyncio.sleep(10)
             if time.monotonic() - S["ping"] > PING_LOST:
                 os._exit(0)
-    asyncio.create_task(run())
+    for c in (watchdog(), mic_loop(), idle_loop()):
+        asyncio.create_task(c)
 
 
 PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Gemini ⇄ Claude</title>
-<style>body{font:16px system-ui;max-width:640px;margin:2rem auto;padding:0 1rem}button{font-size:1.1rem;padding:.6rem 1.2rem}
-#log div{margin:.4rem 0}.me{color:#06c}.ai{color:#222}.ask{color:#a50;font-style:italic}.err{color:#c00}</style>
-<button id=go>Начать разговор</button> <span id=st></span><div id=log></div>
+<style>body{font:15px ui-monospace,monospace;max-width:720px;margin:1.5rem auto;padding:0 1rem}#st{color:#888}
+#log div{margin:.35rem 0}.me{color:#06c}.ai{color:#222}.ask{color:#a50;font-style:italic}.err{color:#c00}.state{color:#888}</style>
+<div id=st>жду сессию Claude…</div><div id=log></div>
 <script>
-const log=document.getElementById('log'),st=document.getElementById('st');
-let cur={};
-function line(k,pre,t){let d=cur[k];if(!d||!d.isConnected){d=document.createElement('div');d.className=k;d.textContent=pre;log.append(d);cur[k]=d}
- d.textContent+=t;scrollTo(0,document.body.scrollHeight)}
-function add(k,t){cur={};const d=document.createElement('div');d.className=k;d.textContent=t;log.append(d)}
-go.onclick=async()=>{
- go.disabled=true;st.textContent='подключаюсь…';
- const ws=new WebSocket('ws://'+location.host+'/ws');ws.binaryType='arraybuffer';
- const out=new AudioContext({sampleRate:24000});let next=0,srcs=[];
- ws.onopen=async()=>{
-  const inp=new AudioContext({sampleRate:16000});
-  const mic=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,channelCount:1}});
-  const sp=inp.createScriptProcessor(2048,1,1);
-  // шлём звук только пока есть речь: тишина стоит как речь
-  const TH=0.015,HANG=8,PRE=3;let talking=false,quiet=0,pre=[];
-  sp.onaudioprocess=e=>{const f=e.inputBuffer.getChannelData(0);let s=0;for(let i=0;i<f.length;i++)s+=f[i]*f[i];
-   const loud=Math.sqrt(s/f.length)>TH,b=new Int16Array(f.length);
-   for(let i=0;i<f.length;i++)b[i]=Math.max(-1,Math.min(1,f[i]))*32767;
-   if(ws.readyState!=1)return;
-   if(loud){quiet=0;if(!talking){talking=true;st.textContent='слышу вас';pre.forEach(p=>ws.send(p));pre=[]}ws.send(b.buffer)}
-   else if(talking){ws.send(b.buffer);if(++quiet>HANG){talking=false;ws.send('end');st.textContent='говорите (лучше в наушниках)'}}
-   else{pre.push(b.buffer);if(pre.length>PRE)pre.shift()}};
-  inp.createMediaStreamSource(mic).connect(sp);sp.connect(inp.destination);st.textContent='говорите (лучше в наушниках)';};
- ws.onmessage=ev=>{
-  if(typeof ev.data!=='string'){const i=new Int16Array(ev.data),f=new Float32Array(i.length);
-   for(let k=0;k<i.length;k++)f[k]=i[k]/32768;const b=out.createBuffer(1,f.length,24000);b.copyToChannel(f,0);
-   const s=out.createBufferSource();s.buffer=b;s.connect(out.destination);next=Math.max(next,out.currentTime);s.start(next);next+=b.duration;
-   srcs.push(s);s.onended=()=>srcs=srcs.filter(x=>x!==s);return}
-  const m=JSON.parse(ev.data);
-  if(m.me)line('me','Вы: ',m.me);
-  if(m.ai)line('ai','Gemini: ',m.ai);
-  if(m.ask)add('ask','→ Claude: '+m.ask);
-  if(m.error)add('err',m.error);
-  if(m.interrupted){srcs.forEach(s=>{try{s.stop()}catch(e){}});srcs=[];next=0}};
- ws.onclose=()=>{st.textContent='разговор закончен';go.disabled=false};
-};
+const log=document.getElementById('log'),st=document.getElementById('st');let cur={};
+function line(k,pre,t){let d=cur[k];if(!d||!d.isConnected){d=document.createElement('div');d.className=k;d.textContent=pre;log.append(d)}
+ cur={};cur[k]=d;d.textContent+=t;scrollTo(0,document.body.scrollHeight)}
+function add(k,t){cur={};const d=document.createElement('div');d.className=k;d.textContent=t;log.append(d);scrollTo(0,document.body.scrollHeight)}
+function connect(){
+ const ws=new WebSocket('ws://'+location.host+'/ws');
+ ws.onopen=()=>st.textContent='журнал подключён · звук и микрофон — на компьютере';
+ ws.onmessage=ev=>{const m=JSON.parse(ev.data);
+  if(m.me)line('me','Вы: ',m.me);if(m.ai)line('ai','Gemini: ',m.ai);
+  if(m.ask)add('ask','→ Claude: '+m.ask);if(m.error)add('err',m.error);if(m.state)add('state','· '+m.state)};
+ ws.onclose=()=>{st.textContent='сессия закрыта, жду новую…';setTimeout(connect,2000)};}
+connect();
 </script>"""
 
 
@@ -223,9 +364,10 @@ async def index(_: web.Request) -> web.Response:
 
 def main() -> None:
     app = web.Application()
-    app.on_startup.append(watchdog)
-    app.add_routes([web.get("/", index), web.get("/ws", talk), web.get("/next", nxt), web.post("/busy", busy),
-                    web.post("/answer", answer), web.post("/btw", btw), web.post("/ping", ping)])
+    app.on_startup.append(start)
+    app.add_routes([web.get("/", index), web.get("/ws", viewer), web.get("/next", nxt), web.post("/busy", busy),
+                    web.post("/answer", answer), web.post("/btw", btw), web.post("/say", say), web.post("/audio", audio),
+                    web.get("/last", last), web.post("/ping", ping), web.post("/quit", quit_)])
     web.run_app(app, host="127.0.0.1", port=PORT, print=None)
 
 

@@ -74,6 +74,12 @@ export function register(on, options) {
     return result;
   });
 
+  // Сессия закрылась — сервис с сокетом Gemini уходит сразу, не ждёт потерянных пингов.
+  on("session.end", async ($, e, next) => {
+    await post($, "/quit").catch(() => {});
+    return next(e);
+  });
+
   // Правила для голосовых сообщений: коротко, зачитывается вслух, поручения — только после согласия.
   on("prompt.compose", async ($, e, next) => {
     const base = await next(e);
