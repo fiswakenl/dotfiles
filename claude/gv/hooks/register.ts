@@ -84,7 +84,7 @@ export function register(on, options) {
         try {
           const server = $.process.spawn({
             argv: ["uv", "run", "-q", "--script", `${$.plugin.root}/voice.py`],
-            env: { GV_PORT: String(PORT), GV_TOKEN: TOKEN },
+            env: { GV_PORT: String(PORT), GV_TOKEN: TOKEN, GV_DUPLEX: options.duplex === "off" ? "0" : "1" },
           });
           for await (const { stream, text } of server) {
             if (stream === "stderr") $.ui.log(`gv: ${text.trim().slice(0, 300)}`, { to: "debug" });
