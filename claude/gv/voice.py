@@ -358,7 +358,8 @@ async def viewer(request: web.Request) -> web.WebSocketResponse:
     viewers.add(ws)
     log("viewer.open", viewers=len(viewers))
     await ws.send_json({"history": history})
-    await ws.send_json({"state": "сокет Gemini открыт" if S["live"] else "сокет Gemini закрыт, откроется, когда заговорите"})
+    if not history:  # состояние уже в истории; отдельно — только когда истории ещё нет
+        await ws.send_json({"state": "сокет Gemini открыт" if S["live"] else "сокет Gemini закрыт"})
     try:
         async for _ in ws:
             pass
