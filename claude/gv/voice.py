@@ -33,6 +33,7 @@ import base64
 import itertools
 import json
 import os
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -469,11 +470,17 @@ async def start(_: web.Application) -> None:
     except Exception as ex:  # noqa: BLE001
         print(f"колонки: {type(ex).__name__}: {ex}", flush=True)
 
+    watched = [HERE / "voice.py", HERE / "prompt.md", HERE / "context.md"]
+    stamp = {f: f.stat().st_mtime for f in watched if f.exists()}
+
     async def watchdog() -> None:
         while True:
             await asyncio.sleep(10)
             if time.monotonic() - S["ping"] > PING_LOST:
                 os._exit(0)
+            if any(f.exists() and f.stat().st_mtime != stamp.get(f) for f in watched):  # код или инструкция изменились — перезапускаемся сами
+                log("reload")
+                os.execv(sys.executable, [sys.executable, *sys.argv])
     for c in ((watchdog(), idle_loop()) if os.environ.get("GV_MIC") == "0" else (watchdog(), mic_loop(), idle_loop())):  # GV_MIC=0 — без микрофона (тесты)
         asyncio.create_task(c)
 
