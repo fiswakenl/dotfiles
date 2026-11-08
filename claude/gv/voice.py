@@ -66,7 +66,7 @@ reqs: dict[int, dict] = {}  # запросы к основной сессии: i
 viewers: set[web.WebSocketResponse] = set()  # открытые страницы-журналы
 history: list[dict] = []  # события журнала: новая или обновлённая страница получает их все
 HISTORY_KEEP = 1000
-S = {"mute": False, "rec": None, "rec_t0": 0.0, "why": "закрыт сервером", "after_tool": False, "pre_audio": bytearray(), "pre_text": [], "sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
+S = {"denied_at": 0.0, "poll_at": 0.0, "mute": False, "rec": None, "rec_t0": 0.0, "why": "закрыт сервером", "after_tool": False, "pre_audio": bytearray(), "pre_text": [], "sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
 
 TOOLS = [{"functionDeclarations": [{
     "name": "say_to_claude",
@@ -566,7 +566,14 @@ async def ping(_: web.Request) -> web.Response:
 @web.middleware
 async def guard(request: web.Request, handler):
     if TOKEN and request.path not in PUBLIC and request.headers.get("x-gv-token") != TOKEN:
+        if time.monotonic() - S["denied_at"] > 30:  # в журнал не чаще раза в 30 с
+            S["denied_at"] = time.monotonic()
+            log("denied", path=request.path, token_sent=bool(request.headers.get("x-gv-token")))
         return web.Response(status=403, text="занято другой сессией")
+    if request.path == "/next" and time.monotonic() - S["poll_at"] > 30:  # плагин жив и опрашивает
+        log("poll", queue=len(inbox), busy=S["busy"])
+    if request.path == "/next":
+        S["poll_at"] = time.monotonic()
     return await handler(request)
 
 
