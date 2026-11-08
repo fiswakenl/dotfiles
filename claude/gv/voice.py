@@ -185,7 +185,8 @@ async def read(g) -> None:
             if t := c.get("inputTranscription", {}).get("text"):
                 await emit({"me": t})
             if t := c.get("outputTranscription", {}).get("text"):
-                await emit({"ai": t})
+                if "<no speech" not in t and "{pause}" not in t:  # метка «молчу» от самой модели — не речь
+                    await emit({"ai": t})
             if c.get("interrupted") and S["spk"]:
                 S["spk"].clear()
     except Exception as ex:  # noqa: BLE001
@@ -422,7 +423,7 @@ async def start(_: web.Application) -> None:
             await asyncio.sleep(10)
             if time.monotonic() - S["ping"] > PING_LOST:
                 os._exit(0)
-    for c in (watchdog(), mic_loop(), idle_loop()):
+    for c in ((watchdog(), idle_loop()) if os.environ.get("GV_MIC") == "0" else (watchdog(), mic_loop(), idle_loop())):  # GV_MIC=0 — без микрофона (тесты)
         asyncio.create_task(c)
 
 
