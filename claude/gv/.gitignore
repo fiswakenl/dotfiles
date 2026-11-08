@@ -1,0 +1,4 @@
+# Типы генерируются движком под сборку Claude Code — не наше.
+.claude-plugin/types/
+node_modules/
+*.log

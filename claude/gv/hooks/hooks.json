@@ -1,0 +1,4 @@
+{
+  "description": "Голосовой канал Gemini Live ⇄ сессия",
+  "modules": ["./register.ts"]
+}

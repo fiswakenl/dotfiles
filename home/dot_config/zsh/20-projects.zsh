@@ -3,6 +3,8 @@
 # Claude Code с модом чистки промпта: ~/.claude/cc — ссылка chezmoi на dotfiles/claude/cc, на маке и на сервере.
 # Функция, а не алиас: алиас не виден функциям ниже — zsh разбирает блок if целиком.
 ccm() { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 command claude --plugin-dir ~/.claude/cc "$@"; }
+# То же + голос через Gemini Live (плагин gv: ~/.claude/gv — ссылка chezmoi на dotfiles/claude/gv).
+ccg() { ccm --plugin-dir ~/.claude/gv "$@"; }
 
 if [[ $OSTYPE == darwin* ]]; then
   dnk() { cd ~/Documents/store/dnk && ccm "$@"; }
