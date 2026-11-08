@@ -105,65 +105,95 @@ async function deliver($, r: { status: number; text: string }): Promise<void> {
   await $.prompt.submit({ text: `${MARK} ${fix}${text}`, asUser: true });
 }
 
+// Файл ~/.claude/gv.state ("on" / "off"): включён ли голос. Переживает перезагрузку плагина и перезапуск сессии; меняет его команда /gv.
+async function stateFile($): Promise<string> {
+  return `${await $.env.get("HOME")}/.claude/gv.state`;
+}
+
+let running = false; // голос включён в этом экземпляре плагина
+
+// Включить: стать хозяином, поднять сервис, открыть страницу, запустить циклы опроса.
+async function turnOn($, options): Promise<void> {
+  if (running) return;
+  running = true;
+  await $.fs.write(await stateFile($), "on").catch(() => {});
+  // Хозяином становимся сразу и до всего остального: иначе собственный опрос успеет прочитать чужой номер в файле и решит, что его вытеснили.
+  await $.fs.write(await tokenFile($), TOKEN).catch(() => {});
+  $.ui.status(undefined);
+  void pollQuestions($, options);
+  void pollQuick($);
+  let up = false;
+  for (let attempt = 0; attempt < TRIES && !up && running; attempt++) up = await launch($, options);
+  if (!running) return;
+  if (!up) return void $.ui.status("gv: сервис не поднялся");
+  if (options.open === "on") void $.process.run(["open", BASE]).catch(() => {});
+  else $.ui.status(`gv: ${BASE}`);
+}
+
+// Выключить: циклы стоят, сервис и сокет Gemini закрыты, выключенность запомнена.
+async function turnOff($): Promise<void> {
+  running = false;
+  await $.fs.write(await stateFile($), "off").catch(() => {});
+  await post($, "/quit").catch(() => {});
+  $.ui.status("gv: выключен, /gv включает");
+}
+
+// Цикл забора вопросов: опрашивает коротко. Сервис не отвечает несколько раз подряд — поднимаем его заново.
+async function pollQuestions($, options): Promise<void> {
+  let down = 0;
+  while (running) {
+    if (await stale($)) return; // сервис теперь у другого экземпляра плагина или остановлен: молча уходим
+    try {
+      await deliver($, await call($, "/next?wait=1"));
+      down = 0;
+    } catch {
+      await sleep(RETRY_MS);
+      if (!running || (await stale($))) return;
+      if (++down >= 3 && !healing) {
+        healing = true;
+        down = 0;
+        await launch($, options).catch(() => false);
+        healing = false;
+      }
+    }
+  }
+}
+
+// Быстрые вопросы /btw: свой цикл, не ждёт основного хода.
+async function pollQuick($): Promise<void> {
+  while (running) {
+    if (await stale($)) return;
+    try {
+      const r = await call($, "/quick");
+      if (r.status === 200 && r.text) void btw($, JSON.parse(r.text));
+      else await sleep(r.status === 204 ? POLL_MS : RETRY_MS);
+    } catch {
+      await sleep(RETRY_MS);
+    }
+  }
+}
+
 export function register(on, options) {
   on("session.start", async ($, e, next) => {
     const result = await next(e);
     if (!e.isInteractive || started) return result;
     started = true;
-    $.ui.status(undefined);
-    // Хозяином становимся сразу и до всего остального: иначе собственный опрос успеет прочитать чужой номер в файле и решит, что его вытеснили.
-    await $.fs.write(await tokenFile($), TOKEN).catch(() => {});
-
-    // Сервис — отдельный процесс, не дочерний: перезагрузка плагина его не убивает. Занятый порт — просим прежний сервис выйти.
-    void (async () => {
-      let up = false;
-      for (let attempt = 0; attempt < TRIES && !up; attempt++) up = await launch($, options);
-      if (!up) return void $.ui.status("gv: сервис не поднялся");
-      $.ui.status(undefined); // убрать устаревшие предупреждения прежних экземпляров
-      if (options.open === "on") void $.process.run(["open", BASE]).catch(() => {});
-      else $.ui.status(`gv: ${BASE}`);
-    })();
-
-    // Пинг: пока он идёт, сервис живёт.
-    $.clock.every(PING_MS, () => void post($, "/ping").catch(() => {}));
-
-    // Цикл забора вопросов: /next ждёт до 25 с и отдаёт 204, если вопросов нет. 403 — нас вытеснила другая сессия.
-    // Сервис не отвечает несколько раз подряд — поднимаем его заново.
-    void (async () => {
-      let down = 0;
-      for (;;) {
-        if (await stale($)) return; // сервис теперь у другого экземпляра плагина или остановлен: молча уходим
-        try {
-          await deliver($, await call($, "/next?wait=1"));
-          down = 0;
-        } catch {
-          await sleep(RETRY_MS);
-          if (await stale($)) return;
-          if (++down >= 3 && !healing) {
-            healing = true;
-            down = 0;
-            await launch($, options).catch(() => false);
-            healing = false;
-          }
-        }
-      }
-    })();
-
-    // Быстрые вопросы /btw: свой цикл, не ждёт основного хода.
-    void (async () => {
-      for (;;) {
-        if (await stale($)) return;
-        try {
-          const r = await call($, "/quick");
-          if (r.status === 200 && r.text) void btw($, JSON.parse(r.text));
-          else await sleep(r.status === 204 ? POLL_MS : RETRY_MS);
-        } catch {
-          await sleep(RETRY_MS);
-        }
-      }
-    })();
-
+    await $.command.register({ name: "gv", description: "Включить или выключить голос (сервис Gemini и сокеты)" });
+    $.clock.every(PING_MS, () => void post($, "/ping").catch(() => {})); // пока идёт пинг, сервис живёт
+    const off = String(await $.fs.read(await stateFile($)).catch(() => "")).trim() === "off";
+    if (off) $.ui.status("gv: выключен, /gv включает");
+    else void turnOn($, options);
     return result;
+  });
+
+  // /gv — переключатель: включён → выключить, выключен → включить.
+  on("command.run", { command: "gv" }, async ($) => {
+    if (running) {
+      await turnOff($);
+      return { text: "gv выключен: сервис и сокеты остановлены. /gv — включить." };
+    }
+    void turnOn($, options);
+    return { text: "gv включается: сервис поднимается, страница откроется сама." };
   });
 
   // Сессия закрылась — сервис с сокетом Gemini уходит сразу, не ждёт потерянных пингов.
