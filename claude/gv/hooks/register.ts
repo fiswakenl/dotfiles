@@ -22,6 +22,7 @@ const TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).s
 
 // Ход, начатый голосом: пока он не кончился, ответ уйдёт Gemini.
 let voiceTurn = false;
+let runningTurn = ""; // id хода основного цикла: нужен, чтобы прервать его поправкой
 let currentId = 0; // номер запроса, над которым идёт ход
 let started = false;
 
@@ -92,8 +93,12 @@ async function launch($, options): Promise<boolean> {
 async function deliver($, r: { status: number; text: string }): Promise<void> {
   if (r.status === 204) return sleep(POLL_MS);
   if (r.status !== 200 || !r.text) return sleep(RETRY_MS);
-  const { id, text, replaces } = JSON.parse(r.text);
+  const { id, text, replaces, abort } = JSON.parse(r.text);
   if (!text) return;
+  if (abort && runningTurn) {  // поправка к запросу, над которым я уже работаю: прерываем этот ход и начинаем заново с полного текста
+    await $.turn.abort({ turnId: runningTurn }).catch(() => {});
+    await sleep(400);
+  }
   voiceTurn = true;
   currentId = id;
   const fix = replaces ? "(поправка к прежнему запросу, новый текст полный) " : "";
@@ -189,13 +194,16 @@ export function register(on, options) {
 
   // Ход начался голосом — сообщаем сервису, что Claude занят (очередь не пускает новых).
   on("turn.start", async ($, e, next) => {
+    if (!e.agentId) runningTurn = e.turnId;
     if (voiceTurn && !e.agentId) void post($, "/busy", { busy: true }).catch(() => {});
     return next(e);
   });
 
   // Ход кончился: ответ — Gemini, Claude свободен. Побочные ходы (агенты) не трогаем.
   on("turn.complete", async ($, e, next) => {
-    if (e.agentId || !voiceTurn) return next(e);
+    if (e.agentId) return next(e);
+    runningTurn = "";
+    if (!voiceTurn) return next(e);
     voiceTurn = false;
     await post($, "/busy", { busy: false }).catch(() => {});
     if (e.reason === "answer" && e.answer.trim()) {

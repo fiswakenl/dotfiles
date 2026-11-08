@@ -399,8 +399,9 @@ def register_request(text: str, replaces) -> tuple[int, str]:
             inbox[:] = [i for i in inbox if i["id"] != replaces]
         if old["state"] != "answered":
             old["state"] = "superseded"
+    abort = bool(old) and old["state"] == "served"  # Claude уже работает над прежним: плагин прервёт его ход и вставит поправку сразу
     reqs[n] = {"text": text, "state": "queued", "replaces": replaces if old else None, "key": normalize(text), "at": time.monotonic()}
-    inbox.append({"id": n, "text": text, "replaces": reqs[n]["replaces"]})
+    inbox.append({"id": n, "text": text, "replaces": reqs[n]["replaces"], "abort": abort})
     log("ask", id=n, text=text, replaces=reqs[n]["replaces"])
     return n, note
 
@@ -524,6 +525,14 @@ async def viewer(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+def next_item() -> dict | None:
+    """Что отдать плагину: срочная поправка (прерывает занятого Claude) или, когда он свободен, первый в очереди."""
+    urgent = next((i for i in inbox if i.get("abort")), None)
+    if urgent:
+        return urgent
+    return inbox[0] if inbox and not S["busy"] else None
+
+
 async def nxt(request: web.Request) -> web.Response:
     """Плагин забирает следующий вопрос; пока Claude занят, вопросы ждут — его не пинаем."""
     if time.monotonic() - S["poll_at"] > 30:  # плагин жив и опрашивает: в журнал не чаще раза в 30 с
@@ -531,13 +540,13 @@ async def nxt(request: web.Request) -> web.Response:
     S["poll_at"] = time.monotonic()
     end = time.monotonic() + min(float(request.query.get("wait", NEXT_WAIT)), NEXT_WAIT)  # плагин спрашивает коротко: висящих запросов нет
     while time.monotonic() < end:
-        if inbox and not S["busy"]:
+        if item := next_item():
             S["busy"] = True  # с этой минуты Claude занят, не ждём /busy от плагина
-            item = inbox.pop(0)
+            inbox.remove(item)
             S["cur"] = item["id"]  # на этот вопрос придёт ближайший /answer
             if item["id"] in reqs:
                 reqs[item["id"]]["state"] = "served"
-            log("next.served", id=item["id"], replaces=item.get("replaces"))
+            log("next.served", id=item["id"], replaces=item.get("replaces"), abort=item.get("abort"))
             return web.json_response(item)
         await asyncio.sleep(0.2)
     return web.Response(status=204)
