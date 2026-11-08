@@ -8,25 +8,28 @@
 // Сервис voice.py поднимается на старте сессии и выходит сам, если плагин перестал пинговать.
 // Все обращения к движку — только здесь: `$` через импорт не передаётся.
 
-// Порт свой у каждой сессии: две сессии с плагином не мешают друг другу, занятый порт не ломает запуск.
-const PORT_FROM = 8790;
-const PORT_SPAN = 100;
+// Работает одна сессия с плагином: новая вытесняет старую — просит прежний сервис выйти (/takeover) и занимает его порт.
+// Ручки сервиса открыты только по токену сессии: вытесненная сессия получает 403 и замолкает, чужие вопросы не забирает.
+const PORT = 8790;
+const BASE = `http://127.0.0.1:${PORT}`;
 const TRIES = 6;
-let base = `http://127.0.0.1:${PORT_FROM}`;
 const MARK = "🎙"; // голосовое сообщение: по метке система знает, что ответ зачитают вслух
 const PING_MS = 20_000;
 const RETRY_MS = 2_000;
+const TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
 // Ход, начатый голосом: пока он не кончился, ответ уйдёт Gemini.
 let voiceTurn = false;
 let started = false;
+let displaced = false;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const call = ($, path: string, init: { method?: string; body?: string } = {}) =>
+  $.http.fetch(`${BASE}${path}`, { ...init, headers: { "x-gv-token": TOKEN, "content-type": "application/json" } });
 
 const post = ($, path: string, body?: unknown) =>
-  $.http.fetch(`${base}${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body),
-  });
+  call($, path, { method: "POST", body: body === undefined ? "" : typeof body === "string" ? body : JSON.stringify(body) });
 
 export function register(on, options) {
   on("session.start", async ($, e, next) => {
@@ -34,29 +37,32 @@ export function register(on, options) {
     if (!e.isInteractive || started) return result;
     started = true;
 
-    // Сервис живёт, пока живёт цикл. Не поднялся (порт занят) — другой порт; упал после работы — поднимаем снова.
+    // Сервис живёт, пока живёт цикл. Порт занят прежней сессией — просим её сервис выйти и ждём, пока порт освободится.
+    // Не поднялся — пробуем снова несколько раз; поработал и вышел (нас вытеснили или сессия кончилась) — не поднимаем.
     void (async () => {
       let opened = false;
       for (let attempt = 0; attempt < TRIES; attempt++) {
-        const port = PORT_FROM + Math.floor(Math.random() * PORT_SPAN);
-        base = `http://127.0.0.1:${port}`;
-        const started_at = Date.now();
+        await $.http.fetch(`${BASE}/takeover`, { method: "POST" }).catch(() => {});
+        for (let i = 0; i < 20; i++) {
+          if (!(await $.http.fetch(`${BASE}/`).catch(() => null))) break;
+          await sleep(250);
+        }
+        const startedAt = Date.now();
         // Страницу открываем, когда сервис отвечает.
         void (async () => {
           for (let i = 0; i < 40 && !opened; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 500));
-            const r = await $.http.fetch(`${base}/ping`, { method: "POST" }).catch(() => null);
-            if (r?.ok) {
+            await sleep(500);
+            if ((await post($, "/ping").catch(() => null))?.ok) {
               opened = true;
-              if (options.open === "on") void $.process.run(["open", base]).catch(() => {});
-              else $.ui.status(`gv: ${base}`);
+              if (options.open === "on") void $.process.run(["open", BASE]).catch(() => {});
+              else $.ui.status(`gv: ${BASE}`);
             }
           }
         })();
         try {
           const server = $.process.spawn({
             argv: ["uv", "run", "-q", "--script", `${$.plugin.root}/voice.py`],
-            env: { GV_PORT: String(port) },
+            env: { GV_PORT: String(PORT), GV_TOKEN: TOKEN },
           });
           for await (const { stream, text } of server) {
             if (stream === "stderr") $.ui.log(`gv: ${text.trim().slice(0, 300)}`, { to: "debug" });
@@ -64,8 +70,8 @@ export function register(on, options) {
         } catch (err) {
           $.ui.log(`gv: сервис не запустился: ${String(err)}`, { to: "debug" });
         }
-        if (Date.now() - started_at > 15_000) attempt = 0; // работал и упал — не считаем неудачей
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (Date.now() - startedAt > 15_000) return;
+        await sleep(1000);
       }
       $.ui.status("gv: сервис не поднялся");
     })();
@@ -73,22 +79,25 @@ export function register(on, options) {
     // Пинг: пока он идёт, сервис живёт.
     $.clock.every(PING_MS, () => void post($, "/ping").catch(() => {}));
 
-    // Цикл забора вопросов: /next ждёт до 25 с и отдаёт 204, если вопросов нет.
+    // Цикл забора вопросов: /next ждёт до 25 с и отдаёт 204, если вопросов нет. 403 — нас вытеснила другая сессия.
     void (async () => {
-      for (;;) {
+      while (!displaced) {
         try {
-          const r = await $.http.fetch(`${base}/next`);
-          if (r.status === 200 && r.text) {
+          const r = await call($, "/next");
+          if (r.status === 403) {
+            displaced = true;
+            $.ui.status("gv: голос взяла другая сессия");
+          } else if (r.status === 200 && r.text) {
             const { text } = JSON.parse(r.text);
             if (text) {
               voiceTurn = true;
               await $.prompt.submit({ text: `${MARK} ${text}`, asUser: true });
             }
           } else if (r.status !== 204) {
-            await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+            await sleep(RETRY_MS);
           }
         } catch {
-          await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+          await sleep(RETRY_MS);
         }
       }
     })();

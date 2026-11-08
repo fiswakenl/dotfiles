@@ -12,7 +12,7 @@ GV_DUPLEX=1 — слушать всегда (в наушниках).
 
 Gemini не отвечает от себя на рабочее: пересказывает слова человека функцией say_to_claude, ответ Claude приходит ей текстом.
 
-Ручки для плагина (127.0.0.1:8790):
+Ручки для плагина (127.0.0.1:8790), все с заголовком x-gv-token, если задан GV_TOKEN (кроме /, /ws, /takeover):
     GET  /next      вопрос для Claude {"id", "text"}; ждёт, пока он появится и Claude свободен; 204 — пока ничего
     POST /busy      {"busy": true|false} — Claude занят/свободен
     POST /answer    тело — ответ Claude текстом; Gemini озвучит
@@ -21,6 +21,7 @@ Gemini не отвечает от себя на рабочее: пересказ
     POST /audio     речь PCM 16 бит, 16 кГц в сокет Gemini вместо микрофона (проверка через TTS)
     GET  /last      последний ответ Claude, пришедший в /answer
     POST /quit      сессия закрылась — сервис выходит
+    POST /takeover  новая сессия просит уступить порт — выходим (без токена)
     POST /ping      плагин жив; пропал на PING_LOST секунд — сервис выходит сам
 
 Ключ и прокси Gemini — ~/.config/gemini.env.
@@ -49,6 +50,9 @@ PING_LOST = 90  # секунд без /ping — выходим
 IDLE_CLOSE = 180  # секунд без речи и звука — закрываем сокет Gemini (откроется заново сам)
 LOUD = 500  # уровень (RMS int16), с которого блок звука считается речью
 HANG, PRE = 10, 3  # блоков по 100 мс: сколько тишины держим после речи и сколько предыстории шлём перед ней
+
+TOKEN = os.environ.get("GV_TOKEN", "")  # токен сессии-хозяина: без него ручки плагина закрыты; пусто — открыты (отладка)
+PUBLIC = {"/", "/ws", "/takeover"}  # страница, журнал и просьба уступить порт — без токена
 
 ids = itertools.count(1)
 inbox: list[dict] = []  # вопросы Gemini → Claude
@@ -321,6 +325,19 @@ async def ping(_: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 
+@web.middleware
+async def guard(request: web.Request, handler):
+    if TOKEN and request.path not in PUBLIC and request.headers.get("x-gv-token") != TOKEN:
+        return web.Response(status=403, text="занято другой сессией")
+    return await handler(request)
+
+
+async def takeover(_: web.Request) -> web.Response:
+    """Новая сессия просит уступить: выходим."""
+    asyncio.get_running_loop().call_later(0.3, lambda: os._exit(0))
+    return web.Response(text="ok")
+
+
 async def start(_: web.Application) -> None:
     S["lock"] = asyncio.Lock()
     try:
@@ -363,11 +380,11 @@ async def index(_: web.Request) -> web.Response:
 
 
 def main() -> None:
-    app = web.Application()
+    app = web.Application(middlewares=[guard])
     app.on_startup.append(start)
     app.add_routes([web.get("/", index), web.get("/ws", viewer), web.get("/next", nxt), web.post("/busy", busy),
                     web.post("/answer", answer), web.post("/btw", btw), web.post("/say", say), web.post("/audio", audio),
-                    web.get("/last", last), web.post("/ping", ping), web.post("/quit", quit_)])
+                    web.get("/last", last), web.post("/ping", ping), web.post("/quit", quit_), web.post("/takeover", takeover)])
     web.run_app(app, host="127.0.0.1", port=PORT, print=None)
 
 
