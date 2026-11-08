@@ -4,11 +4,12 @@
 // подставляет дефолты и отбрасывает значения не из списка, поэтому здесь options
 // читаются как есть. Хранятся в ~/.claude/settings.json → pluginConfigs."cc@inline".
 // Промпт чистильщика — prompt.md в корне плагина. Читается на каждой чистке:
-// правку видно сразу. Нет файла — реплика уходит как есть.
+// правку видно сразу. Нет файла — реплика уходит как есть. Правила проверки
+// агентом — check.md рядом, подмешиваются, только когда она включена.
 //
 // Все обращения к движку — только здесь: `$` через импорт не передаётся.
 
-import { buildContext, buildForkPrompt, buildSystem, parseAnswer } from "./clean.ts";
+import { buildContext, buildForkPrompt, buildRules, buildSystem, parseAnswer, parseCheck } from "./clean.ts";
 
 // Своих имён для сочетаний завести нельзя — занимаем чужое, из списка движка.
 // Свой чорд вешаешь на него в ~/.claude/keybindings.json.
@@ -29,6 +30,10 @@ const MAX_TOKENS = 2000;
 // нет нигде — в транскрипт уходит переписанное. Лежит вне плагина: это личные реплики.
 const LOG_KEEP = 500;
 
+// Реплики, которые ждут проверки агентом: id агента → сырой текст.
+// Перезагрузка плагина их теряет — сырой текст тогда остаётся только в журнале.
+const waiting = new Map<string, string>();
+
 export function register(on, options) {
   on("prompt.submit", async ($, e, next) => {
     if (!e.text.trim() || !TYPED.includes(e.origin.kind)) return next(e);
@@ -40,6 +45,8 @@ export function register(on, options) {
     const untouched = await spin($, cleaning);
     const text = await cleaning;
     if (untouched) await $.prompt.fill({ text: "" });
+    const question = text ? parseCheck(text) : null;
+    if (question) return options.check === "on" ? verify($, e, next, question) : next(e);
     if (!text || text === e.text) return next(e);
     if (options.delivery === "rewrite") return next({ ...e, text });
 
@@ -51,6 +58,21 @@ export function register(on, options) {
         .catch((err) => log($, { resubmit: "failed", error: String(err) }));
     });
     return { drop: "причёсано, отправлено заново" };
+  });
+
+  // Агент проверки ответил: дочищаем с тем, что он нашёл, и отправляем.
+  // Не ответил — уходит сырой текст: текст дороже чистки.
+  on("turn.complete", async ($, e, next) => {
+    const raw = e.agentId ? waiting.get(e.agentId) : undefined;
+    if (raw === undefined) return next(e);
+    waiting.delete(e.agentId);
+    $.ui.status(undefined);
+    await log($, { check: e.reason, agentId: e.agentId, found: e.answer.slice(0, 1000) });
+    const text = e.reason === "answer" ? await clean($, raw, options, e.answer) : null;
+    const final = text && !parseCheck(text) ? text : raw;
+    $.prompt.submit({ text: final, asUser: true })
+      .catch((err) => log($, { resubmit: "failed", error: String(err) }));
+    return next(e);
   });
 
   // Кнопка над полем — только в input: в auto чистит сам Enter, в off не чистит никто.
@@ -69,13 +91,32 @@ export function register(on, options) {
   });
 }
 
+// Чистильщик просит проверку: агент ищет в фоне, сырую реплику роняем — поле
+// свободно. Чистый текст уйдёт из turn.complete агента. Отказ движка — сырой текст.
+async function verify($, e, next, question: string) {
+  const { agentId, deny } = await $.agent.spawn({
+    description: "cc: проверка для чистки",
+    subagentType: "Explore",
+    prompt: `Найди в файлах проекта: ${question}\n\nОтветь коротко фактами: точные имена и пути. Ничего не меняй.`,
+  });
+  if (deny || !agentId) {
+    await log($, { check: "denied", question, error: deny ?? "no agentId" });
+    return next(e);
+  }
+  waiting.set(agentId, e.text);
+  $.ui.status(`cc: проверяю — ${question}`);
+  await log($, { check: "spawned", agentId, question, before: e.text });
+  return { drop: "cc: проверяю, отправлю после" };
+}
+
 // Кнопка: черновик из поля — чистка — обратно в поле. Ничего не отправляет.
 async function rephrase($, options): Promise<void> {
   const { text } = await $.prompt.read();
   if (!text.trim()) return;
   const cleaning = clean($, text, options);
   const untouched = await spin($, cleaning);
-  const fixed = await cleaning;
+  const cleaned = await cleaning;
+  const fixed = cleaned && !parseCheck(cleaned) ? cleaned : null;
   if (untouched) await $.prompt.fill({ text: fixed || text });
 }
 
@@ -100,9 +141,11 @@ async function spin($, until: Promise<unknown>): Promise<boolean> {
 // промпт с правилами и последними репликами разговора, своя модель.
 // В новой сессии ответвляться не от чего — тогда complete.
 // Нет prompt.md или любая осечка — null, и уходит исходный текст: текст дороже чистки.
-async function clean($, text: string, options): Promise<string | null> {
-  const rules = await prompt($);
-  if (!rules.trim()) return null;
+// found — что нашёл агент проверки: второй заход, просить проверку снова нельзя.
+async function clean($, text: string, options, found = ""): Promise<string | null> {
+  const check = options.check === "on" && !found ? await prompt($, "check.md") : "";
+  const rules = buildRules(await prompt($, "prompt.md"), check, found);
+  if (!rules) return null;
   const started = Date.now();
   let via = options.context;
   let model = options.model;
@@ -132,8 +175,8 @@ async function clean($, text: string, options): Promise<string | null> {
   }
 }
 
-async function prompt($): Promise<string> {
-  return String(await $.fs.read(`${$.plugin.root}/prompt.md`).catch(() => ""));
+async function prompt($, name: string): Promise<string> {
+  return String(await $.fs.read(`${$.plugin.root}/${name}`).catch(() => ""));
 }
 
 async function context($): Promise<string> {

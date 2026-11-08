@@ -1,5 +1,5 @@
 import { test, expect } from "claude-code/testing";
-import { buildContext, buildForkPrompt, buildSystem, parseAnswer } from "./clean.ts";
+import { buildContext, buildForkPrompt, buildRules, buildSystem, parseAnswer, parseCheck } from "./clean.ts";
 
 const msg = (role, text, toolUses = []) => ({ role, text, toolUses });
 
@@ -61,6 +61,21 @@ test("просьба в fork: правила, язык, реплика посл�
   expect(ask).toContain("на русском языке");
   expect(ask.endsWith("<реплика>\nглянь второй тоже\n</реплика>")).toBe(true);
   expect(buildForkPrompt("глянь второй тоже")).toBe("");
+});
+
+test("правила: проверка подмешивается, найденное идёт вторым заходом", () => {
+  expect(buildRules("", "Проверка.")).toBe("");
+  expect(buildRules("Причеши.")).toBe("Причеши.");
+  expect(buildRules("Причеши.", "Проверка.")).toBe("Причеши.\n\nПроверка.");
+  const again = buildRules("Причеши.", "", "keywatch: ~/.config/keywatch");
+  expect(again).toContain("<найдено>\nkeywatch: ~/.config/keywatch\n</найдено>");
+  expect(again).toContain("проверку больше не проси");
+});
+
+test("просьба о проверке читается, обычный ответ — нет", () => {
+  expect(parseCheck("<проверить>утилита keywatch: где конфиг</проверить>")).toBe("утилита keywatch: где конфиг");
+  expect(parseCheck("Посмотри и второй тест.")).toBeNull();
+  expect(parseCheck("<проверить> </проверить>")).toBeNull();
 });
 
 test("обёртка реплики снимается, пустой ответ — null", () => {

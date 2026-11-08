@@ -83,6 +83,25 @@ export function buildForkPrompt(text: string, base = ""): string {
     + `\n\n<реплика>\n${text}\n</реплика>`;
 }
 
+// Правила чистильщика: prompt.md, при проверке агентом — check.md, а на второй
+// заход — что агент нашёл. Пусто без prompt.md: тогда чистки нет.
+export function buildRules(base: string, check = "", found = ""): string {
+  if (!base.trim()) return "";
+  let rules = base.trim();
+  if (check.trim()) rules += "\n\n" + check.trim();
+  if (found.trim()) {
+    rules += "\n\nАгент уже проверил по файлам проекта, вот что он нашёл. "
+      + "Восстанови по этому имена и перепиши реплику; проверку больше не проси."
+      + `\n\n<найдено>\n${found.trim()}\n</найдено>`;
+  }
+  return rules;
+}
+
+// Просьба о проверке вместо текста: вопрос агенту, иначе null.
+export function parseCheck(out: string): string | null {
+  return out.match(/<проверить>([\s\S]*?)<\/проверить>/)?.[1]?.trim() || null;
+}
+
 // Модель иногда повторяет обёртку <реплика> — в поле ввода ей не место.
 export function parseAnswer(out: string): string | null {
   return out.replace(/<\/?реплика>/g, "").trim() || null;
