@@ -507,7 +507,7 @@ function add(k,t){cur={};const d=document.createElement('div');d.className=k;d.t
 function connect(){
  const ws=new WebSocket('ws://'+location.host+'/ws');
  ws.onopen=()=>{st.textContent='журнал подключён · звук и микрофон — на компьютере';
-  fetch('/prompt').then(r=>r.json()).then(p=>{document.getElementById('prompt').textContent=p.system+'\n\n— Функции —\n'+p.tools.map(t=>t.name+': '+t.description).join('\n')}).catch(()=>{})};
+  fetch('/prompt').then(r=>r.json()).then(p=>{document.getElementById('prompt').textContent=p.system+'\\n\\n— Функции —\\n'+p.tools.map(t=>t.name+': '+t.description).join('\\n')}).catch(()=>{})};
  const handle=m=>{
   if(m.history){log.innerHTML='';cur={};m.history.forEach(handle);return}
   if(m.me)line('me','Вы: ',m.me);if(m.ai)line('ai','Gemini: ',m.ai);
