@@ -64,7 +64,7 @@ quick_f: dict[int, asyncio.Future] = {}  # ответы на них
 waiting: dict[int, asyncio.Future] = {}  # вызовы say_to_claude, ждущие ответа основной сессии
 WAIT_ANSWER = 900  # секунд Gemini ждёт ответа основной сессии
 viewers: set[web.WebSocketResponse] = set()  # открытые страницы-журналы
-S = {"cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
+S = {"sent": 0, "got": 0, "cur": 0, "last": "", "busy": False, "ping": time.monotonic(), "live": None, "touch": time.monotonic(), "lock": None, "spk": None}
 
 TOOLS = [{"functionDeclarations": [{
     "name": "say_to_claude",
@@ -75,6 +75,25 @@ TOOLS = [{"functionDeclarations": [{
     "description": "Мгновенный вопрос Claude Code по тому, что уже есть в разговоре сессии: ответ за пару секунд, пока основная работа идёт. Не для поручений и не для того, что требует смотреть файлы",
     "parameters": {"type": "OBJECT", "properties": {"text": {"type": "STRING", "description": "Короткий вопрос ясным письменным текстом"}},
                    "required": ["text"]}}]}]
+
+
+LOG = Path.home() / ".claude" / "gv.log"
+LOG_KEEP = 2000
+_log_n = [0]
+
+
+def log(kind: str, **data) -> None:
+    """Строка JSON в ~/.claude/gv.log: что произошло и сколько данных прошло. Звука и ключей в журнале нет."""
+    try:
+        with LOG.open("a") as f:
+            f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "pid": os.getpid(), "kind": kind, **data}, ensure_ascii=False) + "\n")
+        _log_n[0] += 1
+        if _log_n[0] % 200 == 0:
+            lines = LOG.read_text().splitlines()
+            if len(lines) > LOG_KEEP:
+                LOG.write_text("\n".join(lines[-LOG_KEEP:]) + "\n")
+    except OSError:
+        pass
 
 
 def gemini_env() -> dict:
@@ -149,6 +168,7 @@ async def ensure_live():
         await g.send(json.dumps({"setup": setup}))
         S["live"] = g
         touch()
+        log("gemini.open", model=MODEL, duplex=DUPLEX, pause_ms=PAUSE_MS)
         asyncio.create_task(read(g))
         await emit({"state": "сокет Gemini открыт"})
         return g
@@ -157,6 +177,8 @@ async def ensure_live():
 async def live_send(obj: dict) -> None:
     g = await ensure_live()
     touch()
+    if "audio" in obj.get("realtimeInput", {}):
+        S["sent"] += len(obj["realtimeInput"]["audio"]["data"]) * 3 // 4  # base64 → байты
     await g.send(json.dumps(obj))
 
 
@@ -171,9 +193,11 @@ async def read(g) -> None:
             touch()
             e = json.loads(raw)
             if "error" in e:
+                log("gemini.error", error=str(e["error"])[:500])
                 await emit({"error": str(e["error"])})
             for fc in e.get("toolCall", {}).get("functionCalls", []):
                 text = fc.get("args", {}).get("text", "")
+                log("gemini.call", name=fc["name"], text=text)
                 if fc["name"] == "btw":
                     asyncio.create_task(answer_btw(g, fc, text))
                     continue
@@ -181,17 +205,28 @@ async def read(g) -> None:
             c = e.get("serverContent", {})
             for p in c.get("modelTurn", {}).get("parts", []):
                 if "inlineData" in p and S["spk"]:
-                    S["spk"].add(base64.b64decode(p["inlineData"]["data"]))
+                    pcm = base64.b64decode(p["inlineData"]["data"])
+                    S["got"] += len(pcm)
+                    S["spk"].add(pcm)
             if t := c.get("inputTranscription", {}).get("text"):
+                log("heard", text=t)
                 await emit({"me": t})
             if t := c.get("outputTranscription", {}).get("text"):
                 if "<no speech" not in t and "{pause}" not in t:  # метка «молчу» от самой модели — не речь
+                    log("said", text=t)
                     await emit({"ai": t})
+                else:
+                    log("silent")
             if c.get("interrupted") and S["spk"]:
                 S["spk"].clear()
+                log("interrupted")
+            if c.get("turnComplete"):
+                log("turn", audio_sent_bytes=S["sent"], audio_got_bytes=S["got"])
     except Exception as ex:  # noqa: BLE001
+        log("gemini.error", error=f"{type(ex).__name__}: {ex}")
         await emit({"error": f"Gemini: {type(ex).__name__}: {ex}"})
     finally:
+        log("gemini.close", audio_sent_bytes=S["sent"], audio_got_bytes=S["got"])
         if S["live"] is g:
             S["live"] = None
         await emit({"state": "сокет Gemini закрыт"})
@@ -203,12 +238,14 @@ async def quick(text: str) -> str:
     fut = asyncio.get_running_loop().create_future()
     quick_f[n] = fut
     quick_q.append({"id": n, "text": text})
+    log("btw.ask", id=n, text=text)
     await emit({"btwq": text})
     try:
         res = await asyncio.wait_for(fut, 60)
     except TimeoutError:
         res = "Claude не успел ответить."
     quick_f.pop(n, None)
+    log("btw.answer", id=n, chars=len(res))
     await emit({"btwa": res})
     return res
 
@@ -219,12 +256,14 @@ async def ask_claude(g, fc: dict, text: str) -> None:
     fut = asyncio.get_running_loop().create_future()
     waiting[n] = fut
     inbox.append({"id": n, "text": text})
+    log("ask", id=n, text=text)
     await emit({"ask": text})
     try:
         res = await asyncio.wait_for(fut, WAIT_ANSWER)
     except TimeoutError:
         res = "Claude не ответил вовремя."
     waiting.pop(n, None)
+    log("answer.to_gemini", id=n, chars=len(res))
     await emit({"answer": res})
     try:
         await g.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": res}}]}}))
@@ -256,6 +295,7 @@ async def mic_loop() -> None:
     except Exception as ex:  # noqa: BLE001
         await emit({"error": f"микрофон: {type(ex).__name__}: {ex}"})
         return
+    log("mic.start", duplex=DUPLEX)
     await emit({"state": "микрофон слушает"})
     talking, quiet, pre = False, 0, deque(maxlen=PRE)
     while True:
@@ -269,6 +309,7 @@ async def mic_loop() -> None:
                 quiet = 0
                 if not talking:
                     talking = True
+                    log("mic.speech.start")
                     await emit({"state": "слышу вас"})
                     for p in pre:
                         await live_send(chunk_msg(p))
@@ -279,6 +320,7 @@ async def mic_loop() -> None:
                 quiet += 1
                 if quiet > HANG:
                     talking = False
+                    log("mic.speech.end", pause_ms=PAUSE_MS)
                     await live_send({"realtimeInput": {"audioStreamEnd": True}})
                     await emit({"state": "жду ответа"})
             else:
@@ -303,12 +345,14 @@ async def viewer(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     viewers.add(ws)
+    log("viewer.open", viewers=len(viewers))
     await ws.send_json({"state": "сокет Gemini открыт" if S["live"] else "сокет Gemini закрыт, откроется, когда заговорите"})
     try:
         async for _ in ws:
             pass
     finally:
         viewers.discard(ws)
+        log("viewer.close", viewers=len(viewers))
     return ws
 
 
@@ -320,6 +364,7 @@ async def nxt(_: web.Request) -> web.Response:
             S["busy"] = True  # с этой минуты Claude занят, не ждём /busy от плагина
             item = inbox.pop(0)
             S["cur"] = item["id"]  # на этот вопрос придёт ближайший /answer
+            log("next.served", id=item["id"])
             return web.json_response(item)
         await asyncio.sleep(0.2)
     return web.Response(status=204)
@@ -327,12 +372,14 @@ async def nxt(_: web.Request) -> web.Response:
 
 async def busy(request: web.Request) -> web.Response:
     S["busy"] = bool((await request.json()).get("busy"))
+    log("busy", busy=S["busy"])
     return web.Response(text="ok")
 
 
 async def answer(request: web.Request) -> web.Response:
     text = (await request.read()).decode().strip()
     S["last"] = text
+    log("answer.from_claude", id=S["cur"], chars=len(text))
     fut = waiting.get(S["cur"])
     if fut and not fut.done():
         fut.set_result(text or "Claude ответил пусто.")  # Gemini ждёт этот ответ как результат вызова
@@ -344,6 +391,7 @@ async def answer(request: web.Request) -> web.Response:
 async def audio(request: web.Request) -> web.Response:
     """Речь вместо микрофона (тело — PCM 16 бит, 16 кГц, моно): для проверки через TTS. Ответ играет из колонок, как обычно."""
     pcm = await request.read()
+    log("audio.inject", bytes=len(pcm))
 
     async def play() -> None:
         try:
@@ -389,6 +437,7 @@ async def quick_answer(request: web.Request) -> web.Response:
 
 
 async def quit_(_: web.Request) -> web.Response:
+    log("quit")
     asyncio.get_running_loop().call_later(0.3, lambda: os._exit(0))
     return web.Response(text="ok")
 
@@ -407,12 +456,14 @@ async def guard(request: web.Request, handler):
 
 async def takeover(_: web.Request) -> web.Response:
     """Новая сессия просит уступить: выходим."""
+    log("takeover")
     asyncio.get_running_loop().call_later(0.3, lambda: os._exit(0))
     return web.Response(text="ok")
 
 
 async def start(_: web.Application) -> None:
     S["lock"] = asyncio.Lock()
+    log("start", port=PORT, duplex=DUPLEX, pause_ms=PAUSE_MS, mic=os.environ.get("GV_MIC") != "0")
     try:
         S["spk"] = Speaker()
     except Exception as ex:  # noqa: BLE001
