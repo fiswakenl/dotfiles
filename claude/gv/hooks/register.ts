@@ -1,3 +1,5 @@
+import { atom, read, update } from "claude-code";
+
 // Голос через Gemini Live ⇄ сессия Claude Code.
 //
 // Человек говорит с Gemini; она пересказывает его слова вызовами ask и quick (voice.py, логика — core.py).
@@ -17,7 +19,9 @@ const RETRY_MS = 2_000;
 const TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
 let current = 0; // запрос, над которым идёт голосовой ход; 0 — ход не голосовой
-let lastVoice = 0; // последний отвеченный голосовой запрос: ход без новой реплики (итог фоновой задачи) — его продолжение
+let lastVoice = 0;
+const quickRows = atom({ plugin: "gv", key: "quickRows" } as const, {} as Record<string, { id: number; q: string; a: string }[]>);
+const quickOpen = atom({ plugin: "gv", key: "quickOpen" } as const, [] as number[]); // последний отвеченный голосовой запрос: ход без новой реплики (итог фоновой задачи) — его продолжение
 let started = false;
 let running = false; // голос включён в этом экземпляре плагина
 let healing = false;
@@ -71,9 +75,12 @@ async function quick($, r: { id: number; text: string }): Promise<void> {
     else if (reply.isAnswered && reply.text.trim()) text = reply.text.trim();
   } catch {}
   await answer($, r.id, { text });
-  // Человеку — тусклой строкой в чате (её видно, модель не читает); Claude — репликой без показа, чтобы знал, что спросили мимо него.
+  // Человеку — раскрывающейся строкой под голосовым сообщением, во время которого спросил (см. ui.render UserMessage);
+  // нет такого — тусклой строкой в чате. Claude — репликой без показа, чтобы знал, что спросили мимо него.
   const line = `⚡ quick №${r.id}: ${r.text}\n← ${text}`;
-  $.ui.log(line);
+  const under = voiceMessages.get(current || lastVoice);
+  if (under) await update($, quickRows, (rows) => ({ ...rows, [under]: [...(rows[under] ?? []), { id: r.id, q: r.text, a: text }] }));
+  else $.ui.log(line);
   await $.session.append({ message: { type: "user", content: [{ type: "text", text: line }] } }).catch(() => {});
 }
 
@@ -250,6 +257,19 @@ export function register(on, options) {
     if (continued && !current && lastVoice) current = lastVoice;
     else if (!continued) lastVoice = 0;
     return next(e);
+  });
+
+  // Под голосовым сообщением — его quick: «▸ ⚡ quick №N», нажатие раскрывает вопрос и ответ.
+  on("ui.render", { component: "UserMessage" }, async ($, e, next) => {
+    const rows = (await read($, quickRows))[e.requestId];
+    if (!rows?.length) return next(e);
+    const { Box, Text, Button } = $.ui.resolve(e);
+    const open = await read($, quickOpen);
+    const toggle = (id: number) => () => void update($, quickOpen, (ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+    return h(Box, { flexDirection: "column" }, await next(e), ...rows.map((q) =>
+      h(Box, { flexDirection: "column", marginLeft: 2 },
+        h(Button, { onPress: toggle(q.id) }, `${open.includes(q.id) ? "▾" : "▸"} ⚡ quick №${q.id}`),
+        ...(open.includes(q.id) ? [h(Text, { dimColor: true }, `→ ${q.q}\n← ${q.a}`)] : []))));
   });
 
   // Голосовой ход кончился — ответ сервису (пустой, если ответа нет: Claude всё равно свободен). Побочные ходы (агенты) не трогаем.
