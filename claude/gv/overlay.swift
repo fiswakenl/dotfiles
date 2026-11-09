@@ -4,7 +4,7 @@
 import AppKit
 
 let path = CommandLine.arguments[1]
-let parent = getppid()
+let service = getppid()
 
 final class Flipped: NSView { override var isFlipped: Bool { true } }
 
@@ -13,7 +13,9 @@ final class Overlay: NSObject, NSApplicationDelegate {
   var toggle: NSPanel!
   var button: NSButton!
   var box = Flipped()
-  var items: [(id: String, mine: Bool, text: String)] = []
+  var items: [String: (mine: Bool, text: String)] = [:]  // показываемые сообщения по uuid строки
+  var parent: [String: String] = [:]  // uuid строки → uuid предыдущей: откат начинает новую ветку, старая остаётся в файле
+  var leaf = ""  // последняя строка — конец живой ветки
   var offset: UInt64 = 0
   var rest = Data()
   var hidden = UserDefaults.standard.bool(forKey: "gvOverlayHidden")
@@ -51,7 +53,7 @@ final class Overlay: NSObject, NSApplicationDelegate {
     toggle.contentView!.addSubview(button)
     place()
     Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-      if getppid() != parent { exit(0) }  // сервис GV вышел — уходим и мы
+      if getppid() != service { exit(0) }  // сервис GV вышел — уходим и мы
       self?.poll()
     }
     poll()
@@ -70,7 +72,7 @@ final class Overlay: NSObject, NSApplicationDelegate {
     button.contentTintColor = NSColor(white: 1, alpha: 0.85)
     toggle.setFrame(NSRect(x: scr.maxX - edge - btn, y: scr.maxY - edge - btn, width: btn, height: btn), display: true)
     toggle.orderFrontRegardless()
-    if hidden || items.isEmpty { panel.orderOut(nil); return }
+    if hidden || box.subviews.isEmpty { panel.orderOut(nil); return }
     let h = box.frame.height
     panel.setFrame(NSRect(x: scr.maxX - edge - width, y: scr.maxY - edge - btn - 6 - h, width: width, height: h), display: true)
     panel.orderFrontRegardless()
@@ -92,23 +94,32 @@ final class Overlay: NSObject, NSApplicationDelegate {
 
   // Своё — текст запроса строкой (не команды и не служебное); ответ — текст финального сообщения хода.
   func apply(_ line: Data) {
-    guard let d = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-          let m = d["message"] as? [String: Any] else { return }
+    guard let d = try? JSONSerialization.jsonObject(with: line) as? [String: Any], let uuid = d["uuid"] as? String else { return }
+    parent[uuid] = d["parentUuid"] as? String ?? ""
+    leaf = uuid
+    guard let m = d["message"] as? [String: Any] else { return }
     switch d["type"] as? String {
     case "user":
       guard d["isMeta"] as? Bool != true, let t = m["content"] as? String, !t.hasPrefix("<") else { return }
-      items.append((d["uuid"] as? String ?? "", true, t))
+      items[uuid] = (true, t)
     case "assistant":
       guard m["stop_reason"] as? String == "end_turn" else { return }
-      let id = m["id"] as? String ?? ""
       let t = (m["content"] as? [[String: Any]] ?? []).filter { $0["type"] as? String == "text" }
         .compactMap { $0["text"] as? String }.joined(separator: "\n")
-      guard !t.isEmpty else { return }
-      if let i = items.lastIndex(where: { $0.id == id && !$0.mine }) { items[i].text += "\n" + t }
-      else { items.append((id, false, t)) }
+      if !t.isEmpty { items[uuid] = (false, t) }
     default: return
     }
-    if items.count > 20 { items.removeFirst(items.count - 20) }
+  }
+
+  // Последние сообщения живой ветки: от конца назад по ссылкам на предыдущую строку.
+  func visible() -> [(mine: Bool, text: String)] {
+    var out: [(mine: Bool, text: String)] = []
+    var id = leaf
+    while !id.isEmpty, out.count < keep {
+      if let i = items[id] { out.append(i) }
+      id = parent[id] ?? ""
+    }
+    return out.reversed()
   }
 
   func clean(_ s: String) -> String {
@@ -119,11 +130,12 @@ final class Overlay: NSObject, NSApplicationDelegate {
   }
 
   func render() {
-    guard !items.isEmpty else { return }
+    let shown = visible()
+    guard !shown.isEmpty else { return }
     box.subviews.forEach { $0.removeFromSuperview() }
     let maxText = width - 2 * pad - 44 - 2 * bp
     var y = pad
-    for i in items.suffix(keep) {
+    for i in shown {
       let label = NSTextField(wrappingLabelWithString: clean(i.text))
       label.font = .systemFont(ofSize: 13)
       label.textColor = .white
