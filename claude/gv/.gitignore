@@ -3,3 +3,5 @@
 node_modules/
 *.log
 __pycache__/
+# Сборка плашки (overlay.swift) — voice.py собирает сам.
+.build/
