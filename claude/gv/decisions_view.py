@@ -105,6 +105,9 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 .vt{position:absolute;top:0;font-size:13px;white-space:nowrap;transform:translateX(-50%);color:#dc2626;font-weight:600}.vt.old{color:#6b7280;font-weight:400;top:11px}
 #axis{position:relative;height:24px;margin-left:var(--l);border-top:2px solid #111}
 #axis i{position:absolute;top:0;height:6px;border-left:2px solid #111}#axis span{position:absolute;top:7px;font-size:12px;color:#555;transform:translateX(-50%);white-space:nowrap}
+.lg{display:grid;grid-template-columns:46px 1fr 46px 1fr;gap:5px 10px;align-items:center;margin:10px 0 0;padding:10px 12px;background:#fafafa;border:1px solid #eee;border-radius:6px;font-size:14px}
+.lg i{position:relative;height:22px;font-style:normal}.lg u{text-decoration:none}.lg .bar{left:0;top:2px;width:42px}.lg .dot{left:21px;top:5px}
+.lg .ln{position:absolute;left:20px;top:0;height:22px;border-left:2px solid #dc2626}.lg .ln.old{border-left:2px dashed #9ca3af}
 .or{color:#c2410c;font-weight:600}.red{color:#dc2626;font-weight:600}.gy{color:#6b7280}
 table{border-collapse:collapse;font-size:14.5px;width:100%}td,th{text-align:left;padding:3px 10px 3px 0;vertical-align:top;border-bottom:1px solid #f0f0f0}
 th{font-size:13px;color:#555;font-weight:600}td.n{white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -115,7 +118,18 @@ th{font-size:13px;color:#555;font-weight:600}td.n{white-space:nowrap;font-varian
 <h1>Когда срабатывает Decisions</h1>
 <p class="sub" id="sub"></p>
 <div id="tl"></div>
-<p class="note">Кружок с дыркой: открытый кусок текста от Deepgram, он ещё может поменяться; закрашенный: закрытый. Оранжевая полоса: вопрос к Decisions, её длина — время ответа; тёмная — ответ «да». Красная линия: ход Claude остановлен. Серый пунктир: откат, где он остановился бы без ранней проверки. Наведи на любой элемент — покажет текст целиком.</p>
+<div class="lg">
+ <i><u class="bar ph"></u></i><span><b>Фраза</b>: одна реплика целиком, от первого слова до момента, когда она закрыта</span>
+ <i><u class="bar no"></u></i><span><b>Вопрос к Decisions, ответ «нет»</b>: длина полосы — сколько думал, число рядом — вероятность «да»</span>
+ <i><u class="bar sp"></u></i><span><b>Звук речи</b>: отрезки, где микрофон слышит голос</span>
+ <i><u class="bar yes"></u></i><span><b>Вопрос к Decisions, ответ «да»</b>: число рядом жирное</span>
+ <i><u class="dot"></u></i><span><b>Открытый кусок текста</b> от Deepgram: слова ещё могут поменяться</span>
+ <i><u class="bar cl">№1</u></i><span><b>Claude работает</b> над запросом с этим номером</span>
+ <i><u class="dot f"></u></i><span><b>Закрытый кусок текста</b>: слова окончательные</span>
+ <i><u class="ln"></u></i><span><b>Стоп</b>: ход Claude остановлен ранним вопросом, фраза ещё звучит</span>
+ <i></i><span class="gy">Наведи на любой элемент — покажет текст целиком</span>
+ <i><u class="ln old"></u></i><span><b>Откат</b>: здесь ход остановился бы без раннего вопроса</span>
+</div>
 <h2>Все вопросы к Decisions по порядку</h2>
 <table id="calls"></table>
 <div id="cuts"></div>
@@ -199,7 +213,7 @@ def main() -> None:
     rows = [json.loads(line) for line in (TRACES / f"{name}.jsonl").read_text().splitlines() if line.strip()]
     data = collect(rows, *span(rows, *(args[1:3] + [None, None])[:2]))
     command = f"uv run --script ~/.claude/gv/decisions_view.py {name} {clock(data['from'])} {clock(data['to'])}" + (f' -o "{out}"' if out else "")
-    height = 500 + 46 * len(data["decisions"]) + 140 * len(data["cuts"])  # рамка в Excalidraw: строки таблицы бывают в две строки
+    height = 640 + 46 * len(data["decisions"]) + 140 * len(data["cuts"])  # рамка в Excalidraw: строки таблицы бывают в две строки
     page = (PAGE.replace("__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/")).replace("__NAME__", name)
             .replace("__COMMAND__", command).replace("__HEIGHT__", str(height)))
     target = out or TRACES / f"{name}.decisions.html"
