@@ -76,7 +76,7 @@ def level(rows: list[dict], sound: Path, a: float, b: float) -> dict | None:
 
 def collect(rows: list[dict], a: float, b: float) -> dict:
     rows = [r for r in rows if a <= r["ts"] <= b]
-    d = {"from": a, "to": b, "speech": [], "chunks": [], "phrases": [], "decisions": [], "asks": [], "cuts": [], "local": [], "asks_dg": [], "replies": []}
+    d = {"from": a, "to": b, "speech": [], "chunks": [], "phrases": [], "decisions": [], "asks": [], "cuts": [], "local": [], "asks_dg": [], "replies": [], "dg_speech": [], "dg_end": []}
     began = heard = None  # начало идущего отрезка речи; начало идущей фразы
     for i, r in enumerate(rows):
         ev, ts, text = r["ev"], r["ts"], str(r.get("text") or "")
@@ -89,6 +89,10 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
             d["chunks"].append({"t": ts, "text": text, "final": ev == "stt.final", "by_us": bool(r.get("finalized")), "pause": bool(r.get("speech_final"))})
         elif ev == "dg.finalize":
             d["asks_dg"].append({"t": ts, "why": r.get("why", "")})
+        elif ev == "dg.speech_started":
+            d["dg_speech"].append({"t": ts})
+        elif ev == "dg.utterance_end":
+            d["dg_end"].append({"t": ts})
         elif ev == "dg.finalize.reply":
             d["replies"].append({"t": ts, "text": text})
         elif ev == "recognized":
@@ -116,7 +120,7 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
     return d
 
 
-PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x720">
+PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x750">
 <title>gv · decisions · __NAME__</title>
 <!-- обновить или взять другой отрезок: __COMMAND__ -->
 <style>
@@ -131,6 +135,7 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 .row.snd{height:56px}.row.snd>b{top:18px}.row.snd svg{position:absolute;left:0;top:3px;height:50px}
 .vad{position:absolute;top:3px;height:50px;background:#dbeafe;border-radius:3px}
 .tk{position:absolute;top:6px;height:16px;border-left:2px solid #93c5fd}.tk.f{top:3px;height:22px;border-left:4px solid #1d4ed8;margin-left:-1px}
+.dgs,.dge{position:absolute;top:-2px;font-size:11px;line-height:12px;margin-left:-5px;color:#0d9488}
 .fz{position:absolute;top:-2px;font-size:12px;line-height:12px;margin-left:-5px;color:#7c3aed}
 .rh{position:absolute;top:8px;width:12px;height:12px;margin-left:-6px;transform:rotate(45deg);background:#fff;border:2px solid #7c3aed}.rh.y{background:#7c3aed}
 .lab{position:absolute;top:4px;font-size:12.5px;white-space:nowrap;background:#fff;padding:0 3px;z-index:2;color:#6b7280}.lab.y{font-weight:700;color:#c2410c}
@@ -178,12 +183,14 @@ const outcome = c => c.kind === 'early' ? (c.yes ? `стоп №${c.last}` : 'ж
   : c.kind === 'done' ? (c.yes ? 'фраза закрыта' : 'ждём продолжения')
   : (c.yes ? `продолжение №${c.last}: откат и склейка` : 'новая мысль');
 // Все события отрезка словами протокола: кто кому что прислал. Показываются рядом с курсором — понятно, что за чем пришло.
-const flag = c => !c.final ? 'черновик, слова ещё поменяются (is_final=false)'
-  : 'окончательно (is_final=true)' + (c.pause ? ', сам услышал паузу (speech_final=true)' : ', паузы не было (speech_final=false)') +
-    (c.by_us ? ', это ответ на наш Finalize (from_finalize=true)' : '');
+const flag = c => (c.final ? 'is_final=true — окончательно' : 'is_final=false — черновик, слова ещё поменяются') +
+  (c.pause ? ' · speech_final=true — Deepgram услышал паузу' : ' · speech_final=false — паузы нет') +
+  (c.final ? (c.by_us ? ' · from_finalize=true — ответ на наш Finalize' : ' · from_finalize=false — закрыл сам') : '');
 const EVENTS = [
   ...D.speech.flatMap(([a, b]) => [[a, 'Silero', 'голос начался · VADUserStartedSpeaking'], [b, 'Silero', 'тишина → голос кончился · VADUserStoppedSpeaking']]),
   ...D.asks_dg.map(a => [a.t, 'мы → Deepgram', 'Finalize («верни»)' + (a.derived ? ' · по коду Pipecat, в записи не было' : '')]),
+  ...D.dg_speech.map(e => [e.t, 'Deepgram → мы', 'SpeechStarted — Deepgram услышал голос (vad_events)']),
+  ...D.dg_end.map(e => [e.t, 'Deepgram → мы', 'UtteranceEnd — новых слов нет 1 с (utterance_end_ms)']),
   ...D.replies.map(r => [r.t, 'Deepgram → мы', `ответ на Finalize, from_finalize=true «${r.text}»`]),
   ...D.chunks.map(c => [c.t, 'Deepgram → мы', `«${c.text}» — ${flag(c)}`]),
   ...D.local.map(m => [m.t, 'Smart Turn', `EndOfTurnState.${m.yes ? 'COMPLETE' : 'INCOMPLETE'} · по интонации ${m.yes ? 'договорил' : 'не договорил'}`]),
@@ -212,6 +219,8 @@ function draw() {
   h += row('smart turn') + D.local.map(m => `<div class="rh ${m.yes ? 'y' : ''}" ${at_('turn', m.t)} style="left:${x(m.t)}px"></div>`).join('') + '</div>';
   // Текст: отметка там, где кусок пришёл; толстая — закрытый. Сам текст — под шкалой, по курсору.
   h += row('deepgram') + D.asks_dg.map(a => `<span class="fz" ${at_('fin', a.t)} style="left:${x(a.t)}px">▼</span>`).join('') +
+    D.dg_speech.map(e => `<span class="dgs" ${at_('dgs', e.t)} style="left:${x(e.t)}px;top:16px">▲</span>`).join('') +
+    D.dg_end.map(e => `<span class="dge" ${at_('dge', e.t)} style="left:${x(e.t)}px;top:16px">■</span>`).join('') +
     D.chunks.map(c => `<div class="tk ${c.final ? 'f' : ''}" ${at_(c.final ? 'final' : 'open', c.t)} style="left:${x(c.t)}px"></div>`).join('') + '</div><div class="row gap"></div>';
   for (const kind of ['early', 'done', 'route'])
     h += row(NAME[kind]) + D.decisions.filter(c => c.kind === kind).map((c, i, all) =>
@@ -250,10 +259,16 @@ const TILES = [
     return m ? [`<b>${m.yes ? 'COMPLETE' : 'INCOMPLETE'}</b>`, m.t] : ['—', null]; }],
   ['open', '<u class="tk" style="left:16px"></u>', 'черновик', t => {
     const c = lastOf(D.chunks.filter(c => !c.final), t);
-    return c ? [`«${esc(c.text)}»`, c.t] : ['—', null]; }],
+    return c ? [`«${esc(c.text)}» ` + dim('is_final=false'), c.t] : ['—', null]; }],
   ['final', '<u class="tk f" style="left:16px"></u>', 'окончательно', t => {
     const c = lastOf(D.chunks.filter(c => c.final), t);
-    return c ? [`«${esc(c.text)}» ` + dim(c.by_us ? 'ответ на наш Finalize' : c.pause ? 'Deepgram сам услышал паузу' : 'без паузы'), c.t] : ['—', null]; }],
+    return c ? [`«${esc(c.text)}» ` + dim(`speech_final=${c.pause} from_finalize=${c.by_us}`), c.t] : ['—', null]; }],
+  ['dgs', '<u class="dgs" style="left:12px;top:5px">▲</u>', 'SpeechStarted', t => {
+    const e = lastOf(D.dg_speech, t);
+    return e ? ['Deepgram услышал голос', e.t] : [D.dg_speech.length || D.dg_end.length ? '—' : dim('нет в записи'), null]; }],
+  ['dge', '<u class="dge" style="left:12px;top:5px">■</u>', 'UtteranceEnd', t => {
+    const e = lastOf(D.dg_end, t);
+    return e ? ['новых слов нет 1 с', e.t] : [D.dg_speech.length || D.dg_end.length ? '—' : dim('нет в записи'), null]; }],
   ['fin', '<u class="fz" style="left:12px">▼</u>', 'Finalize', t => {
     const a = lastOf(D.asks_dg, t);
     if (!a) return ['—', null];
@@ -274,6 +289,8 @@ const TILES = [
 // Подсказка при наведении на строку легенды: что значит обозначение.
 const ABOUT = {vad: 'Silero VAD: голос или тишина; громкость микрофона', turn: 'Smart Turn: договорил ли по интонации (EndOfTurnState)',
   open: 'Deepgram → мы: открытый кусок, is_final=false, слова ещё поменяются', final: 'Deepgram → мы: закрытый кусок, is_final=true; speech_final — сам услышал паузу; from_finalize — ответ на наш Finalize',
+  dgs: 'Deepgram → мы: SpeechStarted — его собственный детектор услышал голос (vad_events=true)',
+  dge: 'Deepgram → мы: UtteranceEnd — после последнего слова прошло 1 с (utterance_end_ms=1000)',
   fin: 'мы → Deepgram: Finalize («верни»), шлём по паузе Silero', early: 'мы → Decisions: «начало продолжения?» — по первым словам, пока Claude работает',
   done: 'мы → Decisions: «мысль закончена?» — на паузе', route: 'мы → Decisions: «продолжает прошлую реплику?» — когда фраза закрыта',
   ask: 'мы → плагин: запрос Claude', cut: 'мы → плагин: cancel — стоп хода; пунктир — где был бы откат без раннего вопроса'};
