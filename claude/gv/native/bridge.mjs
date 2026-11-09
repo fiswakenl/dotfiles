@@ -23,7 +23,7 @@ async function send(text) {
   if (m) return {uuid:m.uuid};
   await new Promise(r=>setTimeout(r,20));
  }
- return {error:'message_not_in_history'};
+ return {queued:true}; // Claude занят: поле ввода поставило сообщение в очередь, в истории оно появится, когда до него дойдёт
 }
 
 async function rewind({target, text}) {

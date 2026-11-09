@@ -24,6 +24,7 @@ let started = false;
 let running = false; // голос включён в этом экземпляре плагина
 let healing = false;
 const voiceMessages = new Map<number, string>(); // номер запроса → UUID его сообщения в истории Claude
+const queued = new Map<string, number>(); // текст сообщения, вставшего в очередь Claude, → номер запроса
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -52,6 +53,7 @@ async function deliver($, r: { id: number; text: string; rewind: number | null }
   current = 0; // завершение отменяемого хода не выдаём за ответ
   const result = await bridge($, target ? "rewind" : "send", target ? { target, text } : { text });
   for (const [id, uuid] of voiceMessages) if (result.removed?.includes(uuid)) voiceMessages.delete(id);
+  if (result.queued) return void queued.set(text, r.id); // Claude занят: узнаем запрос, когда начнётся его ход
   voiceMessages.set(r.id, result.uuid);
   current = r.id;
 }
@@ -237,7 +239,17 @@ export function register(on, options) {
   // Ход без новой реплики сразу после голосового (продолжение или итог фоновой задачи, <task-notification>) — тот же запрос;
   // набранное руками обрывает цепочку.
   on("turn.start", async ($, e, next) => {
-    if (e.agentId || e.text.startsWith(MARK)) return next(e);
+    if (e.agentId) return next(e);
+    const waiting = queued.get(e.text);
+    if (waiting) {  // дошла очередь до сообщения, что ждало: теперь это голосовой ход, а UUID — из истории
+      queued.delete(e.text);
+      current = waiting;
+      const list = await bridge($, "list", {}).catch(() => null);
+      const uuid = list?.messages?.findLast((m: { text: string }) => m.text === e.text)?.uuid;
+      if (uuid) voiceMessages.set(waiting, uuid);
+      return next(e);
+    }
+    if (e.text.startsWith(MARK)) return next(e);
     const continued = e.text === "" || e.text.startsWith("<task-notification>");
     if (continued && !current && lastVoice) current = lastVoice;
     else if (!continued) lastVoice = 0;
