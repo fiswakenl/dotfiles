@@ -15,6 +15,7 @@ import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from pipecat.classifiers.base_classifier import BaseClassifier, ChoiceResult  # noqa: E402
 from pipecat.frames.frames import TranscriptionFrame  # noqa: E402
 from pipecat.services.settings import STTSettings  # noqa: E402
 from pipecat.services.stt_service import SegmentedSTTService  # noqa: E402
@@ -52,11 +53,21 @@ class Segments(SegmentedSTTService):
         yield TranscriptionFrame(f"отрезок {self.n}", "", "")
 
 
+class Complete(BaseClassifier):
+    """Классификатор без сети: любая реплика законченна — конец решает один Smart Turn."""
+
+    async def _ask(self, state, questions, images=()):
+        return {name: ChoiceResult(choice="complete", probabilities={"complete": 1.0}, confidence=1.0) for name in questions}, None
+
+
 class Fake(Recognizer):
     title = "без сети"
 
     def stt(self):
         return Segments()
+
+    def classifier(self):
+        return Complete()
 
 
 class Core:

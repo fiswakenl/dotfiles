@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["aiohttp", "websockets>=15", "python-socks[asyncio]", "sounddevice", "numpy", "pipecat-ai[deepgram]>=1.15,<2"]
+# dependencies = ["aiohttp", "websockets>=15", "python-socks[asyncio]", "sounddevice", "numpy", "pipecat-ai[deepgram]>=1.15,<2", "httpx[http2]"]
 # ///
 """Сервис GV: голосовой адаптер ⇄ сессия Claude Code. Поднимает плагин, сам не нужен.
 

@@ -7,7 +7,6 @@
 """
 import asyncio
 import base64
-import os
 import sys
 
 import sounddevice as sd
@@ -15,13 +14,13 @@ from loguru import logger
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.classifiers.llm.classifier import LLMClassifier
+from pipecat.classifiers.base_classifier import BaseClassifier
+from pipecat.classifiers.openai.decisions.classifier import OpenAIDecisionsClassifier
 from pipecat.frames.frames import InputAudioRawFrame, TranscriptionFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.transports.base_input import BaseInputTransport
-from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.turns.user_stop.classifier_user_turn_stop_strategy import ClassifierUserTurnStopStrategy
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
@@ -30,8 +29,6 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 from adapters import Adapter
-
-TURN_MODEL = os.environ.get("GV_TURN_MODEL", "gemini-3.5-flash-lite")
 from journal import emit, log
 
 RATE = 16000
@@ -54,6 +51,24 @@ class Recognizer(Adapter):
         """Сервис распознавания Pipecat."""
         raise NotImplementedError
 
+    def classifier(self) -> BaseClassifier:
+        """Классификатор законченности по тексту — OpenAI Decisions (~0,2 с на ответ); ключ — как у адаптера OpenAI,
+        прокси — HTTPS_PROXY из окружения."""
+        from adapters.openai import env
+        return OpenAIDecisionsClassifier(api_key=env()["OPENAI_API_KEY"])
+
+    def completion(self) -> ClassifierUserTurnStopStrategy:
+        """Второе мнение о конце реплики — по тексту: Smart Turn слышит интонацию, классификатор читает, закончена ли мысль.
+        Реплика кончается, когда согласны оба (штатный режим Pipecat); «не договорил» — ждёт продолжения, заговорил — ожидание
+        сбрасывается. Классификатор не ответил вовремя — решает один Smart Turn."""
+        classifier = self.classifier()
+
+        @classifier.event_handler("on_metrics")
+        async def timing(_c, data) -> None:  # сколько думал классификатор: штатные метрики Pipecat
+            log("turn.metrics", **{type(d).__name__: getattr(d.value, "model_dump", lambda: d.value)() for d in data})
+
+        return ClassifierUserTurnStopStrategy(classifier=classifier, classification_timeout=2.0)
+
     def start(self) -> list:
         return [self.run()]
 
@@ -61,7 +76,7 @@ class Recognizer(Adapter):
         pause = self.pause_ms / 1000
         turn = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=pause)))
         pipeline = Pipeline([self.mic, VADProcessor(vad_analyzer=SileroVADAnalyzer()), self.stt(),
-                             Utterances(self, UserTurnStrategies(stop=[turn, completion()]), stop_timeout=pause + 2)])
+                             Utterances(self, UserTurnStrategies(stop=[turn, self.completion()]), stop_timeout=pause + 2)])
         worker = PipelineWorker(pipeline, idle_timeout_secs=None, enable_rtvi=False, enable_turn_tracking=False)
 
         @worker.event_handler("on_pipeline_error")
@@ -130,26 +145,6 @@ class Mic(BaseInputTransport):
 
 def block(pcm: bytes) -> InputAudioRawFrame:
     return InputAudioRawFrame(audio=pcm, sample_rate=RATE, num_channels=1)
-
-
-def completion() -> ClassifierUserTurnStopStrategy:
-    """Второе мнение о конце реплики — по тексту: Smart Turn слышит интонацию, классификатор читает, закончена ли мысль.
-    Реплика кончается, когда согласны оба (штатный режим Pipecat); «не договорил» — ждёт продолжения, заговорил — ожидание
-    сбрасывается. Классификатор не ответил вовремя — решает один Smart Turn.
-    Модель — Gemini (GV_TURN_MODEL) через её OpenAI-совместимый вход; ключ и прокси — ~/.config/gemini.env, как у адаптера Gemini."""
-    from adapters.gemini import gemini_env
-    e = gemini_env()
-    if e["GEMINI_PROXY"]:
-        os.environ["HTTPS_PROXY"] = e["GEMINI_PROXY"]  # клиент OpenAI берёт прокси из окружения
-    llm = OpenAILLMService(api_key=e["GEMINI_API_KEY"], base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                           settings=OpenAILLMService.Settings(model=TURN_MODEL))
-    classifier = LLMClassifier(llm=llm, max_tokens=200)
-
-    @classifier.event_handler("on_metrics")
-    async def timing(_c, data) -> None:  # сколько думал классификатор: штатные метрики Pipecat
-        log("turn.metrics", **{type(d).__name__: getattr(d.value, "model_dump", lambda: d.value)() for d in data})
-
-    return ClassifierUserTurnStopStrategy(classifier=classifier, classification_timeout=2.0)
 
 
 class Utterances(UserTurnProcessor):
