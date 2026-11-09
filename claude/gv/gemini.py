@@ -26,10 +26,10 @@ def tools() -> list[dict]:
     """Обе функции неблокирующие: номер приходит ответом SILENT — Gemini не начинает из-за него нового хода (иначе повторяет вызов)."""
     return [{"functionDeclarations": [{
         "name": "ask", "behavior": "NON_BLOCKING",
-        "description": "Передать слова человека Claude Code. Возвращает номер запроса; ответ придёт позже сообщением",
+        "description": "Передать Claude Code реплику человека — любую. Возвращает её номер; ответ Claude придёт позже сообщением",
         "parameters": {"type": "OBJECT", "properties": {
             "text": {"type": "STRING", "description": "Слова человека почти дословно"},
-            "replaces": {"type": "INTEGER", "description": "Номер запроса, который этот продолжает или исправляет; текст тогда полный — прежнее и новое вместе"}},
+            "replaces": {"type": "INTEGER", "description": "Номер реплики, которую эта продолжает или исправляет; текст тогда полный — прежнее и новое вместе"}},
             "required": ["text"]}}, {
         "name": "quick", "behavior": "NON_BLOCKING",
         "description": "Быстрый вопрос Claude Code по уже сказанному, пока он занят: основную работу не прерывает",

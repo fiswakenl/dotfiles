@@ -113,6 +113,57 @@ async def index(request: web.Request) -> web.StreamResponse:
     return ws
 
 
+def step_events(row: dict) -> list[dict]:
+    """Строка истории Claude → шаги для страницы: мысли, текст, вызовы инструментов, сообщения пользователя."""
+    m = row.get("message") or {}
+    content = m.get("content")
+    if row.get("type") == "user":
+        text = content if isinstance(content, str) else next((b.get("text", "") for b in content or [] if b.get("type") == "text"), "")
+        return [{"step": "user", "text": text[:300]}] if text and not row.get("isMeta") else []
+    if row.get("type") != "assistant" or not isinstance(content, list):
+        return []
+    out = []
+    for b in content:
+        if b.get("type") == "thinking":
+            out.append({"step": "think", "text": (b.get("thinking") or "")[:200]})
+        elif b.get("type") == "text" and b.get("text", "").strip():
+            out.append({"step": "text", "text": b["text"][:400]})
+        elif b.get("type") == "tool_use":
+            args = b.get("input") or {}
+            brief = next((str(args[k]) for k in ("description", "command", "file_path", "pattern", "url", "query", "prompt") if args.get(k)), "")
+            out.append({"step": "tool", "text": f"{b.get('name')}: {brief[:160]}"})
+    return out
+
+
+async def claude_steps() -> None:
+    """Шаги сессии Claude — из её файла истории (~/.claude/projects/*/<сессия>.jsonl): номер сессии даёт мост."""
+    path, pos = None, 0
+    while True:
+        await asyncio.sleep(1)
+        try:
+            if path is None:
+                sid = (await bridge("status", {})).get("sessionId")
+                found = sorted(Path.home().glob(f".claude/projects/*/{sid}.jsonl")) if sid else []
+                if not found:
+                    await asyncio.sleep(9)
+                    continue
+                path, pos = found[0], found[0].stat().st_size  # только новое: старое уже в чате
+            if path.stat().st_size < pos:
+                pos = 0
+            with path.open() as f:
+                f.seek(pos)
+                chunk = f.read()
+            done = chunk.rfind("\n") + 1  # строку, что ещё пишется, дочитаем в следующий раз
+            pos += len(chunk[:done].encode())
+            for line in chunk[:done].splitlines():
+                for e in step_events(json.loads(line)):
+                    emit(e)
+        except Exception as ex:  # noqa: BLE001 — сессия сменилась или мост не готов: найдём заново
+            log("steps.error", error=f"{type(ex).__name__}: {ex}")
+            path = None
+            await asyncio.sleep(5)
+
+
 async def start(_: web.Application) -> None:
     global core, voice
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
@@ -121,7 +172,7 @@ async def start(_: web.Application) -> None:
     pause_ms = int(os.environ.get("GV_PAUSE_MS", 2500))
     voice = gemini.Text(core) if TEXT_ONLY else gemini.Live(core, os.environ.get("GV_DUPLEX", "on") == "on", pause_ms)
     log("start", port=PORT, text_only=TEXT_ONLY, pause_ms=pause_ms)
-    for c in (watchdog(), *voice.start()):
+    for c in (watchdog(), claude_steps(), *voice.start()):
         asyncio.create_task(c)
 
 
@@ -145,7 +196,7 @@ async def watchdog() -> None:
 PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Gemini ⇄ Claude</title>
 <style>body{font:15px ui-monospace,monospace;max-width:720px;margin:1.5rem auto;padding:0 1rem}#st{color:#888}
-details{margin:.6rem 0;color:#444}pre{white-space:pre-wrap;font:inherit;background:#f4f4f4;padding:.6rem;border-radius:6px}#log div{margin:.35rem 0}.me{color:#06c}.ai{color:#222}.ask{color:#a50;font-style:italic}.err{color:#c00}.state{color:#888}</style>
+details{margin:.6rem 0;color:#444}pre{white-space:pre-wrap;font:inherit;background:#f4f4f4;padding:.6rem;border-radius:6px}#log div{margin:.35rem 0}.me{color:#06c}.ai{color:#222}.ask{color:#a50;font-style:italic}.err{color:#c00}.state{color:#888}.step{color:#2b8a3e;font-size:13px;white-space:pre-wrap}</style>
 <div id=st>жду сессию Claude…</div>
 <details><summary>Инструкция и функции Gemini</summary><pre id=prompt></pre></details><div id=log></div>
 <script>
@@ -161,6 +212,7 @@ const handle=m=>{
  if(m.ask){kinds[m.id]=m.kind;add('ask','→ '+who(m.id)+(m.rewind?', откат до №'+m.rewind:'')+': '+m.ask)}
  if(m.answer)add('ask','← ответил '+who(m.id)+': '+m.answer);if(m.superseded)add('state','· №'+m.superseded+' заменён');
  if(m.say)add('state','· Gemini читает ответ '+who(m.say));if(m.dropped)add('state','· ответ на №'+m.dropped+' отброшен');
+ if(m.step)add('step',{think:'  Claude думает: ',text:'  Claude пишет: ',tool:'  Claude → ',user:'  в чат: '}[m.step]+m.text);
  if(m.error)add('err',m.error);if(m.state)add('state','· '+m.state)};
 function connect(){
  const ws=new WebSocket('ws://'+location.host+'/');
