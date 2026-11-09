@@ -5,7 +5,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 
-let controller, backupBase, server, busy = false;
+let controller, server, busy = false;
 const textOf = m => {
  const c = m.message?.content;
  return typeof c === 'string' ? c : Array.isArray(c) ? c.map(b=>b.type==='text'?b.text:'').join('\n') : '';
@@ -35,7 +35,6 @@ async function rewind({target, text}) {
  try {
   const before = rows();
   const index = before.findIndex(m=>m.uuid===found.uuid);
-  fs.writeFileSync(`${backupBase}.${Date.now()}.backup.json`, JSON.stringify(before), {mode:0o600});
   await controller.turn.cancel(); // то же, что делает меню Rewind
   await controller.handleRestoreMessage(found, 'message_selector');
   await new Promise(r=>setImmediate(r));
@@ -57,7 +56,6 @@ async function dispatch({name, args = {}}) {
 export function installNativeBridge(instance, socketPath) {
  if (!socketPath || server) return;
  controller = instance;
- backupBase = socketPath;
  fs.mkdirSync(path.dirname(socketPath), {recursive:true, mode:0o700});
  if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath); // остался от упавшего процесса с тем же PID
  server = net.createServer(socket=>{

@@ -46,9 +46,9 @@ if(!globalThis.__gvNativePreloadInstalled){
    const {Ii}=await import('/$bunfs/root/chunk-3zptncnh.js');
    const terminal=Ii().get(process.stdout);
    const controller=terminal?.container&&findController(terminal.container);
-   if(controller){installNativeBridge(controller,socketPath);clearInterval(timer);report({captured:true,pid:process.pid,via:'Ink renderer registry and React Fiber state',executable:process.execPath});}
-  }catch(error){report({loaded:true,error:String(error),pid:process.pid});}
+   if(controller){installNativeBridge(controller,socketPath);clearInterval(timer);fs.rmSync(diagnostic,{force:true});}
+  }catch(error){report({error:String(error),pid:process.pid});}
   finally{inspecting=false;}
  },150);
- timer.unref();report({loaded:true,pid:process.pid});
+ timer.unref();
 }

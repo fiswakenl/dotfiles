@@ -8,6 +8,7 @@
     uv run --script tests/run.py [часть имени сценария…]   # --keep — не закрывать tmux в конце
 """
 import asyncio
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,7 @@ def tmux(*args: str) -> str:
     return subprocess.run(["tmux", *args], capture_output=True, text=True).stdout
 
 
-async def start_claude(http: aiohttp.ClientSession) -> None:
+async def start_claude(http: aiohttp.ClientSession) -> Path:
     """ccg в пустой временной папке, голос выключен до /gv; доверие к папке подтверждаем сами."""
     work = Path(tempfile.mkdtemp(prefix="gv-e2e-"))
     (work / "state").write_text("off")
@@ -51,7 +52,7 @@ async def start_claude(http: aiohttp.ClientSession) -> None:
         await asyncio.sleep(0.5)
         try:
             if (await http.post(f"{BASE}/ping")).ok:
-                return
+                return work
         except aiohttp.ClientError:
             pass
     raise SystemExit("сервис GV не поднялся:\n" + tmux("capture-pane", "-t", TMUX, "-p"))
@@ -106,7 +107,7 @@ async def main() -> None:
             body = await (await http.post(f"{BASE}/call", json={"name": name, "args": args})).json()
             return body.get("result", body)
 
-        await start_claude(http)
+        work = await start_claude(http)
         events = Events()
         follower = asyncio.create_task(events.follow(http))
         await asyncio.sleep(1)
@@ -135,6 +136,7 @@ async def main() -> None:
         if "--keep" not in sys.argv:
             await http.post(f"{BASE}/quit")
             tmux("kill-session", "-t", TMUX)
+            shutil.rmtree(work, ignore_errors=True)
         print(f"\nпрошло {len(chosen) - failed} из {len(chosen)}")
 
 
