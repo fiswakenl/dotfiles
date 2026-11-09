@@ -1,0 +1,16 @@
+sequenceDiagram
+  participant Я
+  participant Gemini
+  participant GV
+  participant Claude
+  Я->>Gemini: долгая задача
+  Gemini->>GV: ask №1
+  GV->>Claude: №1, работает
+  Я->>Gemini: а что решили вчера?
+  Gemini->>GV: quick №2
+  GV->>Claude: ветка разговора, №1 не трогает
+  Claude-->>GV: быстрый ответ №2
+  GV-->>Gemini: читай №2
+  Claude-->>GV: ответ №1
+  Note over GV: ждёт, пока Gemini договорит №2
+  GV-->>Gemini: читай №1

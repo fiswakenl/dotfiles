@@ -1,0 +1,14 @@
+sequenceDiagram
+  participant Я
+  participant Gemini
+  participant GV
+  participant Claude
+  Я->>Gemini: сделай МАЯК, долгое
+  Gemini->>GV: ask №1
+  GV->>Claude: №1
+  Я->>Gemini: нет, лучше НОЧЬ
+  Gemini->>GV: ask №2, replaces 1
+  GV->>Claude: откат до №1, шлёт №2
+  Claude-->>GV: ответ на №2
+  GV-->>Gemini: читай №2
+  Gemini-->>Я: НОЧЬ

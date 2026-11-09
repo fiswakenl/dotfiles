@@ -1,7 +1,7 @@
 {
   "name": "gv",
   "version": "0.1.0",
-  "description": "Голос через Gemini Live: вы говорите, Gemini пересказывает ваши слова в сессию как сообщение, Claude отвечает коротко, Gemini озвучивает ответ.",
+  "description": "Голос через Gemini Live: сообщения в Claude без подписи плагина, настоящая замена запросов через Restore и повторную отправку.",
   "userConfig": {
     "open": {
       "type": "string",
