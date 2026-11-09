@@ -3,8 +3,10 @@
 Один вход — call(name, args): его зовут голосовой канал, оркестратор плагина и ручка /call. Плагин забирает запросы next() и отдаёт ответы answer().
 Реплику без решения (распознавание без модели) канал отдаёт utter(text): плагин заберёт её next() как route, решит оркестратором
 и вернёт сюда же call() с sure — решение точное, догадки за Gemini (повтор, переформулировка) не нужны.
+О ходах Claude плагин сообщает claude(working): пока идёт любой ход, и набранный руками, новый ask ждёт; о стёртом откатом — rewound().
 Правила:
 - ask — новая мысль; ask с replaces=N — дополнение или поправка N: в очереди — подмена, отправленный или отвеченный — откат до N и новый текст;
+  поздние запросы заменены, только когда откат удался и плагин назвал, что стёрто;
 - quick — быстрый вопрос по разговору: уходит сразу, даже пока Claude занят;
 - ответы звучат по одному, когда Gemini договорила и человек молчит; из ждущих первым — ответ на последний заданный вопрос
   (он свежее в голове; quick спрашивают позже основного — он и звучит первым); опоздавший quick всё равно звучит: это другая мысль;
@@ -19,6 +21,8 @@ from dataclasses import dataclass, field
 DUPLICATE_S = 30  # тот же текст ask за это время — повтор вызова, а не новый запрос
 SAME_THOUGHT_S = 3  # новый ask так скоро после прошлого — Gemini переформулировала ту же мысль: это поправка
 TURN_STALE_S = 10  # ход Gemini без признаков жизни столько секунд считаем законченным
+SAY_RETRY_S = 5  # ответ не ушёл в голосовой канал — снова не раньше чем через столько секунд
+SAY_TRIES = 3  # столько неудачных попыток — и ответ больше не озвучиваем
 
 READ_ALOUD = "Прочитай это человеку вслух почти дословно, от первого лица, ничего не добавляя."
 HEADER = {"ask": "Ответ Claude на запрос №{id}", "quick": "Быстрый ответ Claude на вопрос №{id}"}
@@ -42,11 +46,14 @@ class Core:
         self.ids = itertools.count(1)
         self.reqs: dict[int, Req] = {}
         self.busy: int | None = None  # ask, над которым сейчас работает Claude
+        self.working = False  # идёт ход основного Claude — любой, и набранный руками; сообщает плагин
         self.speech: list[tuple[int, str]] = []  # (номер запроса, что сказать) — ждут, пока голосовой канал свободен
         self.utterances: list[str] = []  # реплики без решения — ждут оркестратора плагина
         self.listening = False  # человек говорит
         self.turn: float | None = None  # ждём конца хода Gemini (с этого времени)
         self.alive = time.monotonic()  # последний признак жизни от Gemini
+        self.hold = 0.0  # до этого времени не озвучиваем: прошлая отправка в голосовой канал не удалась
+        self.tries: dict[int, int] = {}  # номер запроса → неудачных отправок его ответа
         self.changed = asyncio.Event()  # появился запрос для плагина
 
     # ── голосовой канал, оркестратор и /call ────────────────────────────────────
@@ -89,23 +96,31 @@ class Core:
     def next(self) -> dict | None:
         """Что отдать плагину: реплики на решение — первыми, quick и поправки — сразу, новый ask — когда Claude свободен."""
         if self.utterances:
-            return {"kind": "route", "text": self.utterances.pop(0), "busy": any(r.kind == "ask" and r.state in ("queued", "sent") for r in self.reqs.values()),
+            busy = self.working or any(r.kind == "ask" and r.state in ("queued", "sent") for r in self.reqs.values())
+            return {"kind": "route", "text": self.utterances.pop(0), "busy": busy,
                     "recent": [{"id": r.id, "kind": r.kind, "state": r.state, "text": r.text, "answer": r.answer[:300]} for r in self.recent(10)]}
         for r in self.reqs.values():
-            if r.state == "queued" and (r.kind == "quick" or r.rewind or self.busy is None):
+            if r.state == "queued" and (r.kind == "quick" or r.rewind or (self.busy is None and not self.working)):
                 r.state = "sent"
                 if r.kind == "ask":
-                    if r.rewind:  # откат стирает из истории всё после цели: те ходы больше не ответят
-                        for o in self.reqs.values():
-                            if o.kind == "ask" and o.id > r.rewind and o.id != r.id and o.state in ("sent", "answered"):
-                                self._supersede(o, r.id)
                     self.busy = r.id
                 self.emit({"sent": r.id})
                 return {"id": r.id, "kind": r.kind, "text": r.text, "rewind": r.rewind}
         return None
 
+    def claude(self, working: bool) -> None:
+        """Начался или кончился ход основного Claude — любой: пока он идёт, новое сообщение в окно не отправляем."""
+        self.working = working
+        self.changed.set()
+
+    def rewound(self, id: int, removed: list[int]) -> None:
+        """Откат ради запроса id удался и стёр из истории Claude сообщения этих запросов: их ходы больше не ответят."""
+        for o in (self.reqs.get(i) for i in removed):
+            if o and o.kind == "ask" and o.id != id and o.state in ("sent", "answered"):
+                self._supersede(o, id)
+
     def answer(self, id: int, text: str = "", error: str = "") -> None:
-        """Ответ плагина на запрос: текст (пустой — ход кончился без ответа) или ошибка доставки."""
+        """Ответ плагина на запрос: текст (пустой — ход кончился без ответа) или ошибка — не дошёл или ход Claude упал."""
         r = self.reqs.get(id)
         if not r or r.state not in ("sent", "answered"):
             self.log("answer.dropped", id=id, state=r.state if r else None)
@@ -114,8 +129,8 @@ class Core:
             self.busy = None
         r.state = "failed" if error else "answered"
         if error:
-            self.emit({"error": f"Запрос №{id} не дошёл: {error}", "id": id})
-            self.speech.append((id, f"[Запрос №{id} не дошёл до Claude: {error}] Скажи человеку одной фразой, что не получилось."))
+            self.emit({"error": f"Запрос №{id}: {error}", "id": id})
+            self.speech.append((id, f"[Запрос №{id} не выполнен: {error}] Скажи человеку одной фразой, что не получилось."))
         else:
             r.answer = f"{r.answer}\n{text}".strip()
             self.emit({"answer": text, "id": id})
@@ -141,13 +156,29 @@ class Core:
 
     def pump(self) -> None:
         """Следующий ответ — Gemini, если голосовой канал свободен."""
-        stale = self.turn is not None and time.monotonic() - max(self.turn, self.alive) > TURN_STALE_S
-        if not self.speech or self.listening or (self.turn is not None and not stale):
+        now = time.monotonic()
+        stale = self.turn is not None and now - max(self.turn, self.alive) > TURN_STALE_S
+        if not self.speech or self.listening or now < self.hold or (self.turn is not None and not stale):
             return
         id, text = self.speech.pop(max(range(len(self.speech)), key=lambda i: self.speech[i][0]))  # последний заданный вопрос
-        self.turn = time.monotonic()
+        self.turn = now
         self.emit({"say": id})
-        asyncio.get_running_loop().create_task(self.say(text))
+        asyncio.get_running_loop().create_task(self._say(id, text))
+
+    async def _say(self, id: int, text: str) -> None:
+        """say() вернул False — в голосовой канал не ушло: ответ возвращается в очередь и ждёт SAY_RETRY_S."""
+        if await self.say(text) is not False:
+            self.tries.pop(id, None)
+            return
+        self.turn = None
+        self.tries[id] = self.tries.get(id, 0) + 1
+        if self.tries[id] >= SAY_TRIES:
+            self.log("say.dropped", id=id)
+            return self.emit({"error": f"Ответ на №{id} не удалось озвучить", "id": id})
+        if self.reqs[id].state != "superseded":
+            self.speech.append((id, text))
+            self.hold = time.monotonic() + SAY_RETRY_S
+            asyncio.get_running_loop().call_later(SAY_RETRY_S, self.pump)
 
     def recent(self, n: int = 6) -> list[Req]:
         """Последние живые реплики — история для нового сокета Gemini: по ней она узнаёт, что можно поправить."""

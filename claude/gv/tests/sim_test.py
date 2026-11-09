@@ -23,13 +23,15 @@ FAST_S = 1  # столько Claude отвечает без sleep
 QUICK_S = 3  # столько думает quick
 core.SAME_THOUGHT_S *= SCALE  # пороги ядра — в том же ускоренном времени
 core.DUPLICATE_S *= SCALE
+core.SAY_RETRY_S *= SCALE
 
 
 class Sim:
     """Ненастоящие плагин, Claude и голосовой канал вокруг настоящего ядра."""
 
-    def __init__(self) -> None:
+    def __init__(self, say_fails: int = 0) -> None:
         self.t0 = time.monotonic()
+        self.say_fails = say_fails  # столько первых отправок в голосовой канал не удаются
         self.core = Core(say=self.say, emit=self.emit, log=lambda *a, **k: None)
         self.history: list[tuple[int, str]] = []  # (номер запроса, текст) — голосовые сообщения Claude
         self.texts: dict[int, str] = {}
@@ -40,13 +42,16 @@ class Sim:
     def emit(self, e: dict) -> None:
         if "ask" in e:
             self.texts[e["id"]] = e["ask"]
-        if "say" in e:
-            r = self.core.reqs[e["say"]]
-            self.says.append(((time.monotonic() - self.t0) / SCALE, "ОШИБКА" if r.state == "failed" else word_of(r.text)))
 
-    async def say(self, _text: str) -> None:
+    async def say(self, text: str) -> bool:
+        if self.say_fails:
+            self.say_fails -= 1
+            return False
+        r = self.core.reqs[int(re.search(r"№(\d+)", text).group(1))]
+        self.says.append(((time.monotonic() - self.t0) / SCALE, "ОШИБКА" if r.state == "failed" else word_of(r.text)))
         await asyncio.sleep(SAY_S * SCALE)
         self.core.turn_end()
+        return True
 
     async def listen(self, args: dict) -> str:
         self.core.hear(True)
@@ -72,8 +77,11 @@ class Sim:
             if "СБОЙ" in r["text"]:
                 self.core.answer(r["id"], error="мост не ответил")
                 continue
-            if r["rewind"]:
-                self.rewind(next(i for i, (rid, _) in enumerate(self.history) if rid == r["rewind"]) + 1)
+            if r["rewind"]:  # как плагин: откат, затем ядру — чьи сообщения стёрты
+                at = next(i for i, (rid, _) in enumerate(self.history) if rid == r["rewind"])
+                removed = [rid for rid, _ in self.history[at:]]
+                self.rewind(at + 1)
+                self.core.rewound(r["id"], removed)
             self.history.append((r["id"], r["text"]))
             m = re.search(r"sleep (\d+)", r["text"])
             self.turn = asyncio.create_task(self.reply(r["id"], FAST_S + (int(m.group(1)) if m else 0)))
@@ -94,6 +102,10 @@ class Sim:
             return "ok"
         if name == "rewind":
             return self.rewind(args["target"])
+        if name == "typed":  # человек набрал сообщение руками: ход Claude идёт args.seconds секунд
+            self.core.claude(True)
+            asyncio.get_running_loop().call_later(args["seconds"], self.core.claude, False)
+            return "ok"
         if name == "utter":  # реплика уходит оркестратору; номер — когда он решит
             self.decisions[args["text"]] = args
             self.core.utter(args["text"])
@@ -107,7 +119,7 @@ class Scenarios(unittest.IsolatedAsyncioTestCase):
     async def test_all(self):
         for s in (s for s in SCENARIOS if not s.get("live_only")):
             with self.subTest(s["name"]):
-                sim = Sim()
+                sim = Sim(s.get("say_fails", 0))
                 task = asyncio.create_task(sim.plugin())
                 await play(s, sim.do, lambda: [w for _, w in sim.says], scale=SCALE)
                 deadline = time.monotonic() + 60 * SCALE
