@@ -142,6 +142,31 @@ def step_events(row: dict) -> list[dict]:
     return out
 
 
+OVERLAY = HERE / "overlay.swift"
+OVERLAY_BIN = HERE / ".build" / "overlay"
+OVERLAY_PID = Path(os.environ.get("TMPDIR", "/tmp")) / f"gv-overlay-{os.getuid()}.pid"
+
+
+def overlay(session: Path) -> None:
+    """Плашка с последними сообщениями сессии поверх экрана (только мак): собирает overlay.swift, если он новее сборки,
+    гасит прежнюю плашку и поднимает новую на файл сессии. Выходит сама, когда пропал этот процесс."""
+    if sys.platform != "darwin":
+        return
+    import subprocess
+    try:
+        if not OVERLAY_BIN.exists() or OVERLAY_BIN.stat().st_mtime < OVERLAY.stat().st_mtime:
+            OVERLAY_BIN.parent.mkdir(exist_ok=True)
+            subprocess.run(["swiftc", "-O", str(OVERLAY), "-o", str(OVERLAY_BIN)], check=True, capture_output=True, timeout=180)
+        try:
+            os.kill(int(OVERLAY_PID.read_text()), signal.SIGTERM)
+        except (OSError, ValueError):
+            pass
+        OVERLAY_PID.write_text(str(subprocess.Popen([str(OVERLAY_BIN), str(session)]).pid))
+        log("overlay", session=session.name)
+    except Exception as ex:  # noqa: BLE001 — без плашки голос работает как прежде
+        log("overlay.error", error=f"{type(ex).__name__}: {ex}")
+
+
 async def claude_steps() -> None:
     """Шаги сессии Claude — из её файла истории (~/.claude/projects/*/<сессия>.jsonl): номер сессии даёт мост."""
     path, pos = None, 0
@@ -155,6 +180,7 @@ async def claude_steps() -> None:
                     await asyncio.sleep(9)
                     continue
                 path, pos = found[0], found[0].stat().st_size  # только новое: старое уже в чате
+                await asyncio.to_thread(overlay, path)
             if path.stat().st_size < pos:
                 pos = 0
             with path.open() as f:
@@ -184,7 +210,7 @@ async def start(_: web.Application) -> None:
 
 async def watchdog() -> None:
     """Раз в секунду: очередь речи (ход Gemini мог зависнуть); раз в 10 с — пинг плагина и правка кода (перезапуск)."""
-    watched = [*HERE.glob("*.py"), *HERE.glob("adapters/*.py"), *HERE.glob("prompts/*.md"), HERE / "prompts/context.md", HERE / "page.html"]
+    watched = [*HERE.glob("*.py"), *HERE.glob("adapters/*.py"), *HERE.glob("prompts/*.md"), HERE / "prompts/context.md", HERE / "page.html", OVERLAY]
     stamp = {f: f.stat().st_mtime for f in watched if f.exists()}
     for tick in iter(int, 1):
         await asyncio.sleep(1)
