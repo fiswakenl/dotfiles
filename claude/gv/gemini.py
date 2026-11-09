@@ -78,6 +78,8 @@ class Live:
         self.speaking = False  # Gemini читает ответ Claude; остальная её речь (ответы от себя) не звучит — она телефон
         self.sent = self.got = 0
         self.last = time.monotonic()  # последнее движение в голосовом канале
+        self.heard: list[str] = []  # расшифровка речи человека после прошлого вызова — её и передаём, слово в слово
+        self.called = 0.0  # когда был прошлый вызов
         self.spk = Speaker()
 
     def start(self) -> list:
@@ -160,10 +162,16 @@ class Live:
 
     # ── что пришло от Gemini ──
     async def on_call(self, fc: dict) -> None:
-        args = fc.get("args", {})
-        log("gemini.call", name=fc["name"], args=args)
-        self.spk.add(chime())
-        result = self.core.call(fc["name"], args)
+        """Gemini решает, когда и что вызвать; текст — не её пересказ, а всё, что она расшифровала после прошлого вызова."""
+        args, heard = fc.get("args", {}), "".join(self.heard).strip()
+        self.heard.clear()
+        log("gemini.call", name=fc["name"], args=args, heard=heard)
+        if not heard and time.monotonic() - self.called < 5:  # повтор того же вызова: нового ничего не сказано
+            result = "Уже передано."
+        else:
+            self.called = time.monotonic()
+            self.spk.add(chime())
+            result = self.core.call(fc["name"], {**args, "heard": heard} if heard else args)
         try:
             await self.ws.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": result, "scheduling": "SILENT"}}]}}))
         except Exception:  # noqa: BLE001 — сокет оборвался: вызов и так пропал
@@ -177,6 +185,7 @@ class Live:
                 if self.speaking:
                     self.spk.add(pcm)
         if t := c.get("inputTranscription", {}).get("text"):
+            self.heard.append(t)
             log("heard", text=t)
             emit({"me": t})
         if (t := c.get("outputTranscription", {}).get("text")) and not SILENCE_MARK.fullmatch(t):

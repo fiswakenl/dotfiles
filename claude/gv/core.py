@@ -48,7 +48,9 @@ class Core:
 
     # ── Gemini и /call ──────────────────────────────────────────────────────────
     def call(self, name: str, args: dict) -> str:
-        text = str(args.get("text") or "").strip()
+        """args.heard — расшифровка речи после прошлого вызова (её даёт голосовой канал): точнее текста модели, берём её."""
+        heard = str(args.get("heard") or "").strip()
+        text = heard or str(args.get("text") or "").strip()
         if not text:
             return "Пустой текст: ничего не передано."
         if name == "quick":
@@ -62,6 +64,8 @@ class Core:
             old = self.reqs[old.by]
         if old and (old.kind != "ask" or old.state == "failed"):
             old = None
+        if old and heard:  # расшифровка — только новое; полный текст — прежний плюс новое
+            text = f"{old.text} {heard}"
         # Поправка ещё не отправленного запроса наследует его откат: история Claude та же, что ждала его.
         rewind = None if not old else old.rewind if old.state == "queued" else old.id
         r = self._add("ask", text, rewind)
