@@ -23,8 +23,9 @@ SILENCE_MARK = re.compile(r"\s*<(no( speech>?)?)?\s*|\s*speech>\s*|.*\{pause\}.*
 
 
 def tools() -> list[dict]:
+    """Обе функции неблокирующие: номер приходит ответом SILENT — Gemini не начинает из-за него нового хода (иначе повторяет вызов)."""
     return [{"functionDeclarations": [{
-        "name": "ask",
+        "name": "ask", "behavior": "NON_BLOCKING",
         "description": "Передать Claude Code сказанное человеком почти дословно: без запинок и с исправленными ошибками распознавания, но без сокращений и пересказа. "
                        "Возвращается сразу с номером запроса; ответ придёт позже сообщением. Если человек продолжил или поправил уже переданное — "
                        "даже если Claude уже ответил — вызови снова с replaces=номер прежнего запроса и ПОЛНЫМ текстом (прежнее и новое вместе)",
@@ -32,7 +33,7 @@ def tools() -> list[dict]:
             "text": {"type": "STRING", "description": "Слова человека почти дословно: без запинок, ошибки распознавания исправлены"},
             "replaces": {"type": "INTEGER", "description": "Номер запроса, который этот дополняет или исправляет; для новой мысли не указывай"}},
             "required": ["text"]}}, {
-        "name": "quick",
+        "name": "quick", "behavior": "NON_BLOCKING",
         "description": "Новая, не связанная с прежним мысль, пока Claude ещё работает: быстрый ответ по тому, что уже есть в разговоре, основную работу не трогает. "
                        "Не для поручений и не для того, что требует смотреть файлы",
         "parameters": {"type": "OBJECT", "properties": {"text": {"type": "STRING", "description": "Слова человека почти дословно: без запинок, ошибки распознавания исправлены"}},
@@ -154,7 +155,7 @@ class Live:
         self.spk.add(chime())
         result = self.core.call(fc["name"], args)
         try:
-            await self.ws.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": result}}]}}))
+            await self.ws.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": result, "scheduling": "SILENT"}}]}}))
         except Exception:  # noqa: BLE001 — сокет оборвался: вызов и так пропал
             pass
 
