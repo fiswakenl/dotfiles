@@ -1,4 +1,4 @@
-// Startup module for the unmodified Claude 2.1.319 executable.
+// Startup module for the unmodified Claude executable; checked on 2.1.317–2.1.321.
 // Reads the mounted Ink renderer's React state; never rewrites the app bundle.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -38,13 +38,13 @@ if(!globalThis.__gvNativePreloadInstalled){
    if(fiber.child)stack.push(fiber.child);if(fiber.sibling)stack.push(fiber.sibling);
   }
  }
+ // Ink keeps its live instance in a Map keyed by stdout: catch it as it is stored, whatever the bundle names it.
+ let terminal;const mapSet=Map.prototype.set;
+ Map.prototype.set=function(key,value){if(key===process.stdout&&value?.container){terminal=value;Map.prototype.set=mapSet;}return mapSet.call(this,key,value);};
  let inspecting=false;
  const timer=setInterval(async()=>{
   if(inspecting)return;inspecting=true;
   try{
-   // Version-specific internal export: the live terminal/Ink instance registry.
-   const {Ii}=await import('/$bunfs/root/chunk-3zptncnh.js');
-   const terminal=Ii().get(process.stdout);
    const controller=terminal?.container&&findController(terminal.container);
    if(controller){installNativeBridge(controller,socketPath);clearInterval(timer);fs.rmSync(diagnostic,{force:true});}
   }catch(error){report({error:String(error),pid:process.pid});}
