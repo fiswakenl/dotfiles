@@ -1,5 +1,3 @@
-import { atom, read, update } from "claude-code";
-
 // Голос через Gemini Live ⇄ сессия Claude Code.
 //
 // Человек говорит с Gemini; она пересказывает его слова вызовами ask и quick (voice.py, логика — core.py).
@@ -73,13 +71,11 @@ async function quick($, r: { id: number; text: string }): Promise<void> {
     else if (reply.isAnswered && reply.text.trim()) text = reply.text.trim();
   } catch {}
   await answer($, r.id, { text });
-  // В чат — репликой, которую видит и Claude (знает, что спросили мимо него); рисуется свёрнутой строкой, см. ui.render ниже.
-  const added = await $.session.append({ message: { type: "user", content: [{ type: "text", text: `${QUICK_MARK}${r.id}\n→ ${r.text}\n← ${text}` }] } }).catch((err) => ({ deny: String(err) }));
-  if (added.deny) $.ui.log(`gv: quick в чат не записан: ${added.deny}`, { to: "debug" });
+  // Человеку — тусклой строкой в чате (её видно, модель не читает); Claude — репликой без показа, чтобы знал, что спросили мимо него.
+  const line = `⚡ quick №${r.id}: ${r.text}\n← ${text}`;
+  $.ui.log(line);
+  await $.session.append({ message: { type: "user", content: [{ type: "text", text: line }] } }).catch(() => {});
 }
-
-const QUICK_MARK = "⚡ quick №";
-const quickOpen = atom({ plugin: "gv", key: "quickOpen" } as const, [] as string[]); // раскрытые строки quick
 
 // Хозяин сервиса записан в файле: новый экземпляр плагина (другая сессия или перезагрузка) пишет туда свой номер, старый видит чужой
 // номер и молча уходит — не опрашивает и не поднимает сервис заново.
@@ -254,19 +250,6 @@ export function register(on, options) {
     if (continued && !current && lastVoice) current = lastVoice;
     else if (!continued) lastVoice = 0;
     return next(e);
-  });
-
-  // Строка quick в чате — свёрнутая: «▸ ⚡ quick №N», нажатие раскрывает вопрос и ответ; ctrl+o показывает всё как есть.
-  on("ui.render", { component: "UserMessage" }, async ($, e, next) => {
-    const text = e.props.text ?? "";
-    if (!text.startsWith(QUICK_MARK) || e.props.isExpanded) return next(e);
-    const { Box, Text, Button } = $.ui.resolve(e);
-    const [head, ...body] = text.split("\n");
-    const id = e.requestId;
-    const open = (await read($, quickOpen)).includes(id);
-    const toggle = () => void update($, quickOpen, (ids) => (open ? ids.filter((x) => x !== id) : [...ids, id].slice(-100)));
-    return h(Box, { flexDirection: "column" }, h(Button, { onPress: toggle }, `${open ? "▾" : "▸"} ${head}`),
-      ...(open ? [h(Text, { dimColor: true }, body.join("\n"))] : []));
   });
 
   // Голосовой ход кончился — ответ сервису (пустой, если ответа нет: Claude всё равно свободен). Побочные ходы (агенты) не трогаем.
