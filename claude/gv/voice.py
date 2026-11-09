@@ -11,7 +11,7 @@
                  utter {"text"} (законченная реплика на решение оркестратору), listen (речь вместо микрофона),
                  turn {"working"} (начался или кончился ход Claude), rewound {"id", "removed"} (что стёр откат),
                  status, list, send, rewind, cancel (мост в окно Claude)
-    GET  /next   плагин забирает запрос {"id", "kind": ask|quick, "text", "rewind"}, остановку хода {"kind": "cancel", "id"}
+    GET  /next   плагин забирает запрос {"id", "kind": ask|quick, "text", "rewind"}, остановку хода {"kind": "cancel", "id", "text"}
                  или реплику на решение {"kind": "route", "text", "busy", "recent"}; ждёт до ?wait= секунд, 204 — пока ничего
     POST /answer ?id=N, {"text"} или {"error"} — ответ на запрос; ask освобождает Claude
     POST /ping   плагин жив; пропал на PING_LOST секунд — сервис выходит сам

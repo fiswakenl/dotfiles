@@ -1,6 +1,6 @@
 // Мост в окно Claude: Unix-сокет, строка JSON {name, args} → строка JSON с результатом.
-// Имена те же, что у /call в voice.py: status, list, send {text}, rewind {target, text?}, cancel.
-// cancel — остановить идущий ход, как Esc: история остаётся, сообщение не стирается.
+// Имена те же, что у /call в voice.py: status, list, send {text}, rewind {target, text?}, cancel {text}.
+// cancel — остановить идущий ход, как Esc; text — сообщение этого хода.
 // target — номер сообщения пользователя с начала ветки (1, 2…) или его UUID; text — сразу отправить после отката.
 import net from 'node:net';
 import fs from 'node:fs';
@@ -38,13 +38,28 @@ const draftOf = () => {
  return {value:d.value, cursor:d.cursorOffset, mode:d.mode, pasted:d.pastedContents};
 };
 
-function restore({value, cursor, mode, pasted}) {
+function put({value, cursor, mode, pasted}) {
  const draft = controller.draft;
- if (!value || draft.value) return; // нечего возвращать или человек уже пишет новое
  draft.setMode(mode);
  if (pasted && Object.keys(pasted).length) draft.setPastedContents(pasted);
  draft.replaceValue(value);
  draft.setCursorOffset(cursor);
+}
+
+function restore(kept) {
+ if (kept.value && !controller.draft.value) put(kept); // иначе нечего возвращать или человек уже пишет новое
+}
+
+// Ход, остановленный до первого ответа, Claude убирает из истории, а его сообщение кладёт обратно в поле ввода, как будто
+// человек хочет его дописать. Голосовое сообщение дописывают голосом: поле возвращается к тому, что в нём было до остановки.
+async function cancel({text}) {
+ const kept = draftOf();
+ await controller.turn.cancel();
+ for (let i = 0; i < 25 && text; i++) {
+  if (controller.draft.value === text) { put(kept); break; }
+  await new Promise(r=>setTimeout(r,20));
+ }
+ return {cancelled:true};
 }
 
 async function rewind({target, text}) {
@@ -72,7 +87,7 @@ async function dispatch({name, args = {}}) {
  if (name === 'list') return {messages:users().map(m=>({uuid:m.uuid, text:textOf(m)}))};
  if (name === 'send') return send(args.text);
  if (name === 'rewind') return rewind(args);
- if (name === 'cancel') { await controller.turn.cancel(); return {cancelled:true}; }
+ if (name === 'cancel') return cancel(args);
  return {error:`unknown_name: ${name}`};
 }
 

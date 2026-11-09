@@ -138,7 +138,7 @@ async function poll($, options, me: number): Promise<void> {
       continue;
     }
     if (item.kind === "cancel") { // человек заговорил, и это продолжение: ход этого запроса — стоп, остальное решит конец фразы
-      if (current === item.id) void bridge($, "cancel", {}).catch((err) => $.ui.log(`gv: ход не остановлен: ${String(err)}`, { to: "debug" }));
+      if (current === item.id) void bridge($, "cancel", { text: `${MARK} ${item.text}` }).catch((err) => $.ui.log(`gv: ход не остановлен: ${String(err)}`, { to: "debug" }));
       continue;
     }
     try {

@@ -128,7 +128,7 @@ class Core:
         """Что отдать плагину: остановка хода — первой, затем реплики на решение, quick и поправки — сразу, новый ask — когда
         Claude свободен."""
         if self.cancels:
-            return {"kind": "cancel", "id": self.cancels.pop(0)}
+            return {"kind": "cancel", "id": (id := self.cancels.pop(0)), "text": self.reqs[id].text}
         if self.utterances:
             return {"kind": "route", "text": self.utterances.pop(0), "busy": self.claude_busy(),
                     "recent": [{"id": r.id, "kind": r.kind, "state": r.state, "text": r.text, "answer": r.answer[:300]} for r in self.recent(10)]}

@@ -142,8 +142,8 @@ test("человек заговорил, и это продолжение → о
   w.svc.next.push({ kind: "cancel", id: 7 }); // идёт ход другого запроса
   await wait(100);
   expect(w.calls("cancel").length).toBe(0);
-  w.svc.next.push({ kind: "cancel", id: 1 });
+  w.svc.next.push({ kind: "cancel", id: 1, text: "привет" });
   await w.until(() => w.calls("cancel").length);
-  expect(w.calls("cancel").length).toBe(1);
+  expect(w.calls("cancel").map((c) => c.body.args.text)).toEqual(["🎙 привет"]); // по тексту мост узнаёт сообщение, вернувшееся в поле ввода
   await stop($);
 });
