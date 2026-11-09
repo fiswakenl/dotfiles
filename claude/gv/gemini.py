@@ -76,10 +76,7 @@ class Live:
         self.core, self.duplex, self.pause_ms = core, duplex, pause_ms
         self.ws = None
         self.lock = asyncio.Lock()
-        # Речь Gemini в этом ходе: hold — ответ на реплику человека, придерживаем (вдруг перед вызовом функции);
-        # live — читает ответ Claude, сразу в колонки; mute — после вызова функции молчим до конца хода.
-        self.mode = "hold"
-        self.held_audio, self.held_text = bytearray(), []
+        self.speaking = False  # Gemini читает ответ Claude; остальная её речь (ответы от себя) не звучит — она телефон
         self.sent = self.got = 0
         self.spk = Speaker()
 
@@ -154,9 +151,6 @@ class Live:
     async def on_call(self, fc: dict) -> None:
         args = fc.get("args", {})
         log("gemini.call", name=fc["name"], args=args)
-        self.held_audio.clear()
-        self.held_text.clear()  # сказанное перед вызовом не произносим
-        self.mode = "mute"
         self.spk.add(chime())
         result = self.core.call(fc["name"], args)
         try:
@@ -169,39 +163,26 @@ class Live:
             if "inlineData" in p:
                 pcm = base64.b64decode(p["inlineData"]["data"])
                 self.got += len(pcm)
-                if self.mode == "live":
+                if self.speaking:
                     self.spk.add(pcm)
-                elif self.mode == "hold":
-                    self.held_audio.extend(pcm)
         if t := c.get("inputTranscription", {}).get("text"):
             log("heard", text=t)
             emit({"me": t})
         if (t := c.get("outputTranscription", {}).get("text")) and not SILENCE_MARK.fullmatch(t):
-            if self.mode == "hold":
-                self.held_text.append(t)
-            elif self.mode == "live":
-                log("said", text=t)
+            log("said" if self.speaking else "unsaid", text=t)  # unsaid — сказала от себя, в колонки не пустили
+            if self.speaking:
                 emit({"ai": t})
         if c.get("interrupted"):
             self.spk.clear()
-            self.held_audio.clear()
-            self.held_text.clear()
             log("interrupted")
         if c.get("turnComplete"):
-            if self.mode == "hold":  # ход без вызова функции: придержанное говорим как есть
-                self.spk.add(bytes(self.held_audio))
-                for t in self.held_text:
-                    log("said", text=t)
-                    emit({"ai": t})
-            self.held_audio.clear()
-            self.held_text.clear()
-            self.mode = "hold"
+            self.speaking = False
             log("turn", audio_sent_bytes=self.sent, audio_got_bytes=self.got)
             self.core.turn_end()
 
     # ── что уходит в Gemini ──
     async def say(self, text: str) -> None:
-        self.mode = "live"
+        self.speaking = True
         try:
             await self.send({"realtimeInput": {"text": text}})
         except Exception as ex:  # noqa: BLE001
