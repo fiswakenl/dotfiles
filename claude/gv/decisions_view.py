@@ -209,7 +209,7 @@ function at(t) {
   document.getElementById('now').innerHTML =
     `<b>${clock(t, true)}</b><span class="text">${text || none}</span>` +
     `<b>ты</b><span>${speaking ? 'говоришь' : quiet ? `молчишь ${num(t - quiet[1], 1)} с` : 'молчишь'}` +
-      (turn ? ` · smart turn: ${turn.yes ? 'договорил' : 'не договорил'}` : '') + '</span>' +
+      (turn ? ` · smart turn ${num(t - turn.t, 1)} с назад: ${turn.yes ? 'договорил' : 'не договорил'}` : '') + '</span>' +
     `<b>claude</b><span>${!ask ? none : cut ? `№${ask.id} остановлен${stopped(cut)}` : `№${ask.id} работает`}</span>` +
     `<b>decisions</b><span>${!q ? none : `${NAME[q.kind]} · «${ASK[q.kind]}» по «${esc(q.text)}»` + (q.pause != null ? ` · пауза ${num(q.pause, 1)} с` : '') +
       (going ? ' · думает' : ` → ${num(q.p)} за ${num(q.d)} с · ${outcome(q)}`)}</span>`;
