@@ -2,8 +2,9 @@
 # requires-python = ">=3.10"
 # ///
 """Отрезок записи запуска GV (~/.claude/gv-trace/<время>.jsonl) → HTML-страница о вопросах к Decisions: когда какой задан,
-сколько думал, что решил и что после этого стало с ходом Claude. Данные лежат в странице одним блоком JSON, рисует их скрипт
-страницы: другой отрезок или другая запись — та же команда с другими числами.
+сколько думал, что решил и что после этого стало с ходом Claude. На странице шкала и панель под ней: ведёшь мышкой по шкале —
+панель показывает состояние на этот момент. Данные лежат в странице одним блоком JSON, рисует их скрипт страницы: другой отрезок
+или другая запись — та же команда с другими числами.
 
     uv run --script ~/.claude/gv/decisions_view.py                                  # последняя запись, 25 с до последнего запроса
     uv run --script ~/.claude/gv/decisions_view.py 20261110-001556 00:16:17 00:16:39 -o страница.html
@@ -94,8 +95,7 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
                                    "yes": bool(after(rows, i, "cut", id=r["last"]))})
         elif ev == "turn" and (m := VERDICT.search(text)) and "Classifier" in text:
             took = after(rows, i, "turn.metrics") or {}
-            d["decisions"].append({"kind": "done", "t": ts, "d": took.get("ProcessingMetricsData", 0.2), "p": float(m[2]), "word": m[1],
-                                   "text": m[3], "yes": bool(after(rows, i, "recognized"))})
+            d["decisions"].append({"kind": "done", "t": ts, "d": took.get("ProcessingMetricsData", 0.2), "p": float(m[2]), "text": m[3], "yes": bool(after(rows, i, "recognized"))})
         elif ev == "route":
             said = d["phrases"][-1]["text"] if d["phrases"] else ""
             d["decisions"].append({"kind": "route", "t": ts, "d": r["s"], "p": r["p"], "text": said, "last": r["last"],
@@ -107,11 +107,11 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
     return d
 
 
-PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x__HEIGHT__">
+PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x640">
 <title>GV · Decisions · __NAME__</title>
 <style>
 *{box-sizing:border-box}html,body{margin:0;background:#fff;color:#111;font:16px/1.45 -apple-system,"Segoe UI",Roboto,sans-serif}
-.w{padding:22px 26px;--l:150px}h1{font-size:25px;margin:0 0 4px}h2{font-size:18.5px;margin:24px 0 6px}p{margin:4px 0}
+.w{padding:22px 26px;--l:150px}h1{font-size:25px;margin:0 0 4px}p{margin:4px 0}
 .sub,.note{color:#555;font-size:15px}code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:13px}
 #tl{position:relative;margin-top:12px;padding-top:24px}
 .row{position:relative;height:30px;margin-left:var(--l);border-bottom:1px solid #f0f0f0}.row.gap{height:10px;border:0}
@@ -128,49 +128,25 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 .vt{position:absolute;top:0;font-size:13px;white-space:nowrap;transform:translateX(-50%);color:#dc2626;font-weight:600}.vt.old{color:#6b7280;font-weight:400;top:11px}
 #axis{position:relative;height:24px;margin-left:var(--l);border-top:2px solid #111}
 #axis i{position:absolute;top:0;height:6px;border-left:2px solid #111}#axis span{position:absolute;top:7px;font-size:12px;color:#555;transform:translateX(-50%);white-space:nowrap}
-.lg{display:grid;grid-template-columns:46px 1fr 46px 1fr;gap:5px 10px;align-items:center;margin:10px 0 0;padding:10px 12px;background:#fafafa;border:1px solid #eee;border-radius:6px;font-size:14px}
-.lg i{position:relative;height:22px;font-style:normal}.lg u{text-decoration:none}.lg .bar{left:0;top:2px;width:42px}
-.lg .wv{position:absolute;left:6px;top:7px;width:30px;height:8px;background:repeating-linear-gradient(90deg,#1d4ed8 0 2px,transparent 2px 4px)}
-.lg .ln{position:absolute;left:20px;top:0;height:22px;border-left:2px solid #dc2626}.lg .ln.old{border-left:2px dashed #9ca3af}
 #cur{position:absolute;top:22px;bottom:24px;width:0;border-left:1.5px solid #111;pointer-events:none;z-index:3;display:none}
-#now{margin:8px 0 0;padding:9px 12px;min-height:96px;border:1px solid #d1d5db;border-radius:6px;font-size:14.5px;display:grid;grid-template-columns:150px 1fr;gap:3px 10px;align-content:start}
-#now>b{font-weight:600;color:#555;text-align:right}#now .open{background:#bfdbfe;border-radius:2px;padding:1px 2px;box-decoration-break:clone;-webkit-box-decoration-break:clone}#now .hint{grid-column:1/3;color:#6b7280}
-.tag{display:inline-block;font-size:12px;font-weight:500;border-radius:4px;padding:0 6px;margin-left:6px;vertical-align:1px}
-.tag.w{background:#f3f4f6;color:#6b7280}
+#now{margin:8px 0 0;padding:9px 12px;min-height:128px;border:1px solid #d1d5db;border-radius:6px;font-size:14.5px;display:grid;grid-template-columns:150px 1fr;gap:3px 10px;align-content:start}
+#now>b{font-weight:600;color:#555;text-align:right}#now .hint{grid-column:1/3;color:#6b7280}
+#now .open{background:#bfdbfe;border-radius:2px;padding:1px 2px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.tag{display:inline-block;font-size:12px;font-weight:500;border-radius:4px;padding:0 6px;margin-left:6px;vertical-align:1px;background:#f3f4f6;color:#6b7280}
 .or{color:#c2410c;font-weight:600}.red{color:#dc2626;font-weight:600}.gy{color:#6b7280}
-table{border-collapse:collapse;font-size:14.5px;width:100%}td,th{text-align:left;padding:3px 10px 3px 0;vertical-align:top;border-bottom:1px solid #f0f0f0}
-th{font-size:13px;color:#555;font-weight:600}td.n{white-space:nowrap;font-variant-numeric:tabular-nums}
-.sum{display:flex;height:30px;margin:6px 0 2px;border-radius:5px;overflow:hidden;font-size:12.5px;line-height:30px;text-align:center;white-space:nowrap}
-.sum div{border-right:2px solid #fff;overflow:hidden}.wt{background:#e5e7eb}.sum .yes{color:#fff;border:0;border-right:2px solid #fff}.sum .no{border:0;border-right:2px solid #fff}
 </style>
 <div class="w">
 <h1>Когда срабатывает Decisions</h1>
 <p class="sub" id="sub"></p>
 <div id="tl"></div>
 <div id="now"></div>
-<div class="lg">
- <i><u class="rh" style="left:14px;top:5px"></u><u class="rh y" style="left:32px;top:5px"></u></i><span><b>Smart Turn, локальная модель</b>: на каждой паузе решает по интонации; пустой ромб «не договорил», закрашенный «договорил»</span>
- <i><u class="bar no"></u></i><span><b>Вопрос к Decisions, ответ «нет»</b>: длина полосы — сколько думал, число рядом — вероятность «да»</span>
- <i><u class="bar sp" style="background:#dbeafe;border:0"></u><u class="wv"></u></i><span><b>Звук речи</b>: тёмные столбики — громкость микрофона, светлый фон — где Silero, вторая локальная модель, слышит голос</span>
- <i><u class="bar yes"></u></i><span><b>Вопрос к Decisions, ответ «да»</b>: число рядом жирное</span>
- <i><u class="tk" style="left:20px;top:3px"></u></i><span><b>Открытый кусок текста</b> от Deepgram, отметка в момент прихода; слова ещё могут поменяться</span>
- <i><u class="bar cl">№1</u></i><span><b>Claude работает</b> над запросом с этим номером</span>
- <i><u class="tk f" style="left:20px;top:0"></u></i><span><b>Закрытый кусок текста</b>, коммит: слова окончательные</span>
- <i><u class="ln"></u></i><span><b>Стоп</b>: ход Claude остановлен ранним вопросом, фраза ещё звучит</span>
- <i><u class="ln" style="border-color:#111"></u></i><span><b>Курсор</b>: води мышкой по шкале — панель под ней покажет состояние на этот момент; закрытый текст обычный, открытый выделен</span>
- <i><u class="ln old"></u></i><span><b>Откат</b>: здесь ход остановился бы без раннего вопроса</span>
-</div>
-<h2>Все вопросы к Decisions по порядку</h2>
-<table id="calls"></table>
-<div id="cuts"></div>
-<p class="note" style="margin-top:18px">Страница собрана из записи <code>__NAME__</code>. Обновить или взять другой отрезок: <code>__COMMAND__</code></p>
+<p class="note" style="margin-top:10px">Обновить или взять другой отрезок: <code>__COMMAND__</code></p>
 </div>
 <script type="application/json" id="data">__DATA__</script>
 <script>
 const D = JSON.parse(document.getElementById('data').textContent), T0 = D.from, LEN = D.to - D.from;
 const NAME = {early: '1. Ранний', done: '2. Конец фразы', route: '3. Маршрут'};
-const ASK = {early: 'это начало продолжения?', done: 'мысль закончена?', route: 'продолжает прошлую реплику?'};
-const WORD = {complete: 'закончена', short: 'короткая', incomplete: 'не закончена'};
+const ASK = {early: 'начало продолжения?', done: 'мысль закончена?', route: 'продолжает прошлую реплику?'};
 const num = (x, n = 2) => x.toFixed(n).replace('.', ',');
 const clock = (t, frac) => { const d = new Date(t * 1000), p = n => String(n).padStart(2, '0');
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}` + (frac ? ',' + p(Math.floor(t % 1 * 100)) : ''); };
@@ -232,9 +208,9 @@ function at(t) {
   const done = got.filter(c => c.final).map(c => c.text).join(' '), open = tail && !tail.final ? tail.text : '';
   const text = phrase
     ? (done || open ? `${esc(done)} ${open ? `<span class="open">${esc(open)}</span>` : ''}` +
-        (open ? '<span class="tag w">выделено — ещё открыто</span>' : '<span class="tag w">всё закрыто</span>')
+        (open ? '<span class="tag">выделено — ещё открыто</span>' : '<span class="tag">всё закрыто</span>')
       : '<span class="gy">речь идёт, текста от Deepgram ещё нет</span>')
-    : last ? `${esc(last.text)}<span class="tag w">фраза закрыта ${num(t - last.b, 1)} с назад</span>` : '<span class="gy">ещё ничего не сказано</span>';
+    : last ? `${esc(last.text)}<span class="tag">фраза закрыта ${num(t - last.b, 1)} с назад</span>` : '<span class="gy">ещё ничего не сказано</span>';
   const speaking = D.speech.some(([a, b]) => t >= a && t <= b), quiet = D.speech.filter(s => s[1] < t).pop();
   const turn = D.local.filter(m => m.t <= t).pop();
   const ask = D.asks.filter(a => a.t <= t).pop(), cut = ask && D.cuts.find(c => c.id === ask.id && c.t <= t);
@@ -244,36 +220,25 @@ function at(t) {
     `<b>Собрано</b><span>${text}</span>` +
     `<b>Ты</b><span>${speaking ? 'говоришь' : quiet ? `молчишь ${num(t - quiet[1], 1)} с` : 'молчишь'}` +
       (turn ? `<span class="gy"> · Smart Turn ${num(t - turn.t, 1)} с назад: ${turn.yes ? 'договорил' : 'не договорил'}</span>` : '') + '</span>' +
-    `<b>Claude</b><span>${!ask ? 'свободен' : cut ? `остановлен на запросе №${ask.id}, ждёт конца фразы` : `работает над запросом №${ask.id}`}</span>` +
-    `<b>Decisions</b><span>${going ? `думает: ${NAME[going.kind]}, «${esc(going.text)}»` : call ? `последний ответ: ${NAME[call.kind]} ${num(call.p)}, ${outcome(call)}` : 'вопросов ещё не было'}</span>`;
+    `<b>Claude</b><span>${!ask ? 'свободен' : cut ? `остановлен на запросе №${ask.id}${stopped(cut)}` : `работает над запросом №${ask.id}`}</span>` +
+    `<b>Decisions</b><span>${going ? `думает: ${asked(going)}` : call ? `${asked(call)} → ${num(call.p)} за ${num(call.d)} с, ${outcome(call)}` : 'вопросов ещё не было'}</span>`;
+}
+
+// Вопрос к Decisions словами: какой, по какому тексту, с какой паузой перед фразой.
+const asked = c => `${NAME[c.kind]}, «${ASK[c.kind]}» по «${esc(c.text)}»` + (c.pause != null ? `, пауза перед фразой ${num(c.pause, 1)} с` : '');
+// Сколько прошло от первого слова фразы до стопа и на сколько позже ход остановил бы откат.
+function stopped(c) {
+  const phrase = D.phrases.find(p => p.a <= c.t && p.b >= c.t), old = D.asks.find(a => a.rewind === c.id);
+  return (phrase ? `: через ${num(c.t - phrase.a)} с от первого слова` : '') + (old ? `, откат был бы на <span class="red">${num(old.t - c.t)} с позже</span>` : '');
 }
 
 function away() {
   HOVER = null;
   document.getElementById('cur').style.display = 'none';
-  document.getElementById('now').innerHTML = '<span class="hint">Води мышкой по шкале: здесь будет состояние на этот момент — какой текст уже собран, открыт он или закрыт, что делает Claude.</span>';
+  document.getElementById('now').innerHTML = '<span class="hint">Здесь будет состояние на момент под курсором: собранный текст (открытая часть выделена), ты, Claude и последний вопрос к Decisions.</span>';
 }
 
-document.getElementById('sub').textContent = `Отрезок ${clock(D.from)}–${clock(D.to)}, ${Math.round(LEN)} с. ` +
-  `Фраз: ${D.phrases.length}, вопросов к Decisions: ${D.decisions.length}, остановок хода: ${D.cuts.length}.`;
-document.getElementById('calls').innerHTML = '<tr><th>когда</th><th>вопрос</th><th>что видел</th><th>ответ</th><th>думал</th><th>что решил</th></tr>' +
-  D.decisions.map(c => `<tr><td class="n">${clock(c.t - c.d, true)}</td><td class="or">${NAME[c.kind]}: ${ASK[c.kind]}</td><td>«${esc(c.text)}»` +
-    (c.pause != null ? ` <span class="gy">пауза перед ней ${num(c.pause, 1)} с</span>` : '') + `</td><td class="n">${num(c.p)}` +
-    (c.word ? ` <span class="gy">${WORD[c.word] ?? c.word}</span>` : '') + `</td><td class="n">${num(c.d)} с</td><td>${outcome(c)}</td></tr>`).join('');
-document.getElementById('cuts').innerHTML = D.cuts.map(c => {
-  const phrase = D.phrases.find(p => p.b >= c.t) ?? {a: Math.max(...D.speech.map(s => s[0]).filter(a => a <= c.t), D.from)};
-  const calls = D.decisions.filter(k => k.kind === 'early' && k.last === c.id && k.t <= c.t + 0.05 && k.t >= phrase.a), total = c.t - phrase.a;
-  let at = phrase.a, parts = '';
-  for (const k of calls) {
-    const wait = k.t - k.d - at;
-    if (wait > 0.01) parts += `<div class="wt" style="width:${wait / total * 100}%" title="ждём текст ${num(wait)} с">ждём текст ${num(wait)} с</div>`;
-    parts += `<div class="${k.yes ? 'yes' : 'no'}" style="width:${k.d / total * 100}%" title="вопрос ${num(k.d)} с: ${num(k.p)}">${num(k.d)} с: ${k.yes ? 'да' : 'нет'}</div>`;
-    at = k.t;
-  }
-  const old = D.asks.find(a => a.rewind === c.id), asked = calls.reduce((s, k) => s + k.d, 0);
-  return `<h2>Стоп №${c.id}: ${num(total)} с от первого слова</h2><div class="sum">${parts}</div>` +
-    `<p class="note">На вопросы ушло ${num(asked)} с, на ожидание текста от Deepgram ${num(total - asked)} с.` +
-    (old ? ` Без ранней проверки ход остановил бы откат: на <span class="red">${num(old.t - c.t)} с позже</span>.` : '') + '</p>'; }).join('');
+document.getElementById('sub').textContent = `Запись __NAME__, отрезок ${clock(D.from)}–${clock(D.to)}. Води мышкой по шкале.`;
 draw();
 addEventListener('resize', draw);
 </script>
@@ -290,9 +255,8 @@ def main() -> None:
     data = collect(rows, *span(rows, *(args[1:3] + [None, None])[:2]))
     data["level"] = level(rows, TRACES / f"{name}.wav", data["from"], data["to"])
     command = f"uv run --script ~/.claude/gv/decisions_view.py {name} {clock(data['from'])} {clock(data['to'])}" + (f' -o "{out}"' if out else "")
-    height = 860 + 46 * len(data["decisions"]) + 140 * len(data["cuts"])  # рамка в Excalidraw: строки таблицы бывают в две строки
     page = (PAGE.replace("__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/")).replace("__NAME__", name)
-            .replace("__COMMAND__", command).replace("__HEIGHT__", str(height)))
+            .replace("__COMMAND__", command))
     target = out or TRACES / f"{name}.decisions.html"
     target.write_text(page)
     print(target)
