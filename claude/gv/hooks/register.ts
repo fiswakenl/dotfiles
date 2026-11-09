@@ -17,7 +17,7 @@ const MARK = "🎙"; // голосовое сообщение: по метке C
 const TRIES = 6;
 const PING_MS = 20_000;
 const RETRY_MS = 2_000;
-const ORCHESTRATOR = { model: "haiku", maxTokens: 64, timeoutMs: 8_000 };
+const ORCHESTRATOR = { model: "haiku", maxTokens: 1_000, timeoutMs: 8_000 }; // в ответе — решение и очищенный текст реплики
 const TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
 // Работает одна сессия с плагином: новая вытесняет старую — просит прежний сервис выйти (/quit) и занимает его порт.
@@ -172,7 +172,7 @@ async function quick($, r: { id: number; text: string }): Promise<void> {
 }
 
 // Реплика адаптера распознавания: оркестратор — один короткий вызов модели без форка и прогрева чата, видит конец разговора
-// и переданные реплики. Решение — обратно в сервис тем же входом, что у Gemini; текст — расшифровка как есть.
+// и переданные реплики. Решение — обратно в сервис тем же входом, что у Gemini; текст — расшифровка, очищенная оркестратором.
 async function route($, item: Route): Promise<void> {
   $.ui.status(`решаю: «${item.text.slice(0, 40)}${item.text.length > 40 ? "…" : ""}»`); // видно, что реплика услышана и ждёт решения
   const [rules, messages] = await Promise.all([
@@ -182,7 +182,7 @@ async function route($, item: Route): Promise<void> {
   const reply = await $.model.complete({ ...ORCHESTRATOR, system: rules, prompt: prompt(messages, item) }).catch(() => null);
   if (!reply?.isAnswered) $.ui.log(`gv: оркестратор не ответил (${reply?.reason ?? "ошибка"}), реплика — новой мыслью`, { to: "debug" });
   const d = decide(reply?.isAnswered ? reply.text : "", item);
-  const sent = await post($, "/call", { name: d.name, args: { heard: item.text, replaces: d.replaces, sure: true } }).catch(() => null);
+  const sent = await post($, "/call", { name: d.name, args: { heard: d.text, replaces: d.replaces, sure: true } }).catch(() => null);
   const n = /№(\d+)/.exec(JSON.parse(sent?.text || "{}").result ?? "")?.[1] ?? "?";
   $.ui.status(d.name === "quick" ? `⚡ quick №${n}` : d.replaces ? `↺ поправка №${d.replaces} → №${n}` : `→ новое №${n}`);
 }

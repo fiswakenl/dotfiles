@@ -41,24 +41,31 @@ test("промпт без истории и реплик", () => {
 });
 
 test("решение: поправка переданного ask", () => {
-  expect(decide('{"call": "ask", "replaces": 2}', item())).toEqual({ name: "ask", replaces: 2 });
+  expect(decide('{"call": "ask", "replaces": 2}', item())).toEqual({ name: "ask", replaces: 2, text: item().text });
 });
 
 test("решение: quick", () => {
-  expect(decide('Вот: {"call":"quick"}', item())).toEqual({ name: "quick", replaces: 0 });
+  expect(decide('Вот: {"call":"quick"}', item())).toEqual({ name: "quick", replaces: 0, text: item().text });
 });
 
 test("решение: новая мысль", () => {
-  expect(decide('{"call": "ask"}', item())).toEqual({ name: "ask", replaces: 0 });
+  expect(decide('{"call": "ask"}', item())).toEqual({ name: "ask", replaces: 0, text: item().text });
 });
 
 test("поправить можно только переданный ask: quick и неизвестный номер — новая мысль", () => {
-  expect(decide('{"call": "ask", "replaces": 3}', item())).toEqual({ name: "ask", replaces: 0 });
-  expect(decide('{"call": "ask", "replaces": 9}', item())).toEqual({ name: "ask", replaces: 0 });
+  expect(decide('{"call": "ask", "replaces": 3}', item())).toEqual({ name: "ask", replaces: 0, text: item().text });
+  expect(decide('{"call": "ask", "replaces": 9}', item())).toEqual({ name: "ask", replaces: 0, text: item().text });
 });
 
 test("непонятный ответ или его нет — новая мысль", () => {
-  expect(decide("не знаю", item())).toEqual({ name: "ask", replaces: 0 });
-  expect(decide("{сломано", item())).toEqual({ name: "ask", replaces: 0 });
-  expect(decide("", item())).toEqual({ name: "ask", replaces: 0 });
+  expect(decide("не знаю", item())).toEqual({ name: "ask", replaces: 0, text: item().text });
+  expect(decide("{сломано", item())).toEqual({ name: "ask", replaces: 0, text: item().text });
+  expect(decide("", item())).toEqual({ name: "ask", replaces: 0, text: item().text });
+});
+
+test("текст: очищенный, если не сжат до пересказа; иначе расшифровка", () => {
+  const long = item({ text: "ну типа проверь, короче, тесты в Cloud MD" });
+  expect(decide('{"call": "ask", "text": "проверь тесты в CLAUDE.md"}', long).text).toBe("проверь тесты в CLAUDE.md");
+  expect(decide('{"call": "ask", "text": "тесты"}', long).text).toBe(long.text);
+  expect(decide('{"call": "ask"}', long).text).toBe(long.text);
 });
