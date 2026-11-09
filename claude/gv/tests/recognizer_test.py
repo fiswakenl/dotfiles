@@ -15,6 +15,9 @@ import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import journal  # noqa: E402
+
+journal.TRACES = Path(tempfile.mkdtemp())  # запись запуска теста — во временную папку, не к живым
 from pipecat.classifiers.base_classifier import BaseClassifier, ChoiceResult  # noqa: E402
 from pipecat.frames.frames import TranscriptionFrame  # noqa: E402
 from pipecat.services.settings import STTSettings  # noqa: E402

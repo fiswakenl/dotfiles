@@ -10,14 +10,37 @@ LOG_KEEP = 2000
 SESSIONS = Path.home() / ".claude" / "gv-sessions"
 SESSIONS_KEEP = 200
 HISTORY_KEEP = 1000
+TRACES = Path.home() / ".claude" / "gv-trace"  # подробная запись запуска для разбора: события с точным временем и звук
+TRACES_KEEP = 20
 
 history: list[dict] = []  # события: новая или обновлённая страница получает их все
 viewers: set = set()  # открытые страницы (websocket)
-_state = {"lines": 0, "rec": None, "t0": 0.0}
+_state = {"lines": 0, "rec": None, "t0": 0.0, "trace": None}
+
+
+def trace_open() -> Path:
+    """Новая запись запуска: ~/.claude/gv-trace/<время>.jsonl (+ .wav — звук микрофона); старые сверх TRACES_KEEP — прочь."""
+    TRACES.mkdir(parents=True, exist_ok=True)
+    for f in sorted(TRACES.glob("*.jsonl"))[:-TRACES_KEEP]:
+        for g in TRACES.glob(f.stem + ".*"):
+            g.unlink(missing_ok=True)
+    _state["trace"] = TRACES / f"{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+    return _state["trace"]
+
+
+def trace(ev: str, ts: float | None = None, **data) -> None:
+    """Событие в запись запуска: ts — точное время (time.time()), по нему события сводятся со звуком."""
+    if f := _state["trace"]:
+        try:
+            with f.open("a") as h:
+                h.write(json.dumps({"ts": ts or time.time(), "ev": ev, **data}, ensure_ascii=False, default=str) + "\n")
+        except OSError:
+            pass
 
 
 def log(kind: str, **data) -> None:
-    """Строка JSON: что произошло и сколько данных прошло. Звука и ключей здесь нет."""
+    """Строка JSON: что произошло и сколько данных прошло. Звука и ключей здесь нет. Копия — в запись запуска."""
+    trace(kind, **data)
     try:
         with LOG.open("a") as f:
             f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "pid": os.getpid(), "kind": kind, **data}, ensure_ascii=False) + "\n")

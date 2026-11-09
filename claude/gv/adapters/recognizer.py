@@ -30,7 +30,8 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 from adapters import Adapter, router
-from journal import emit, log
+from adapters.trace import Trace
+from journal import emit, log, trace_open
 
 RATE = 16000
 BLOCK_S = 0.02  # блок микрофона
@@ -38,7 +39,7 @@ BLOCK_S = 0.02  # блок микрофона
 logger.remove()
 logger.add(sys.stderr, level="WARNING")  # в ~/.claude/gv.out — только сбои Pipecat
 # Решения о конце реплики — штатные отладочные записи Pipecat (Smart Turn, классификатор: вердикт и уверенность) — в журнал GV.
-TURN_LOGS = ("pipecat.audio.turn", "pipecat.turns.user_stop")
+TURN_LOGS = ("pipecat.audio.turn", "pipecat.turns.user_stop", "pipecat.services.deepgram")
 logger.add(lambda m: log("turn", src=m.record["name"].rsplit(".", 1)[-1], text=m.record["message"]),
            level="DEBUG", filter=lambda r: r["name"].startswith(TURN_LOGS), format="{message}")
 
@@ -94,7 +95,9 @@ class Recognizer(Adapter):
         turn = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=pause)))
         pipeline = Pipeline([self.mic, VADProcessor(vad_analyzer=SileroVADAnalyzer()), self.stt(),
                              Utterances(self, UserTurnStrategies(stop=[turn, self.completion()]), stop_timeout=pause + 2)])
-        worker = PipelineWorker(pipeline, idle_timeout_secs=None, enable_rtvi=False, enable_turn_tracking=False)
+        record = trace_open()
+        worker = PipelineWorker(pipeline, idle_timeout_secs=None, enable_rtvi=False, enable_turn_tracking=False,
+                                observers=[Trace(record.with_suffix(".wav"))])
 
         @worker.event_handler("on_pipeline_error")
         async def on_error(_worker, frame) -> None:
