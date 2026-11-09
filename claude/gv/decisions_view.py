@@ -72,7 +72,7 @@ def level(rows: list[dict], sound: Path, a: float, b: float) -> dict | None:
 
 def collect(rows: list[dict], a: float, b: float) -> dict:
     rows = [r for r in rows if a <= r["ts"] <= b]
-    d = {"from": a, "to": b, "speech": [], "chunks": [], "phrases": [], "decisions": [], "asks": [], "cuts": []}
+    d = {"from": a, "to": b, "speech": [], "chunks": [], "phrases": [], "decisions": [], "asks": [], "cuts": [], "local": []}
     began = heard = None  # начало идущего отрезка речи; начало идущей фразы
     for i, r in enumerate(rows):
         ev, ts, text = r["ev"], r["ts"], str(r.get("text") or "")
@@ -87,6 +87,8 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
             if text:
                 d["phrases"].append({"a": heard or ts, "b": ts, "text": text})
             heard = None
+        elif ev == "turn" and "End of Turn result" in text:  # Smart Turn, локальная модель: договорил ли по интонации
+            d["local"].append({"t": ts, "yes": text.endswith("COMPLETE") and not text.endswith("INCOMPLETE")})
         elif ev == "route.early":
             d["decisions"].append({"kind": "early", "t": ts, "d": r["s"], "p": r["p"], "text": text, "last": r["last"],
                                    "yes": bool(after(rows, i, "cut", id=r["last"]))})
@@ -115,28 +117,26 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 .row{position:relative;height:30px;margin-left:var(--l);border-bottom:1px solid #f0f0f0}.row.gap{height:10px;border:0}
 .row>b{position:absolute;left:calc(-1*var(--l));top:5px;width:calc(var(--l) - 12px);font-size:14px;font-weight:600;text-align:right}
 .bar{position:absolute;top:6px;height:18px;border-radius:4px;overflow:hidden;white-space:nowrap;font-size:12.5px;line-height:17px;padding:0 5px}
-.ph{background:#f1f5f9;border:1px solid #94a3b8}.sp{background:#dbeafe;border:1px solid #2563eb}.cl{background:#dcfce7;border:1px solid #16a34a}
+.sp{background:#dbeafe;border:1px solid #2563eb}.cl{background:#dcfce7;border:1px solid #16a34a}
 .cl.q{background:#ecfccb;border-color:#65a30d}.no{background:#fed7aa;border:1px solid #ea580c}.yes{background:#ea580c;border:1px solid #c2410c}
-.dot{position:absolute;top:9px;width:11px;height:11px;border-radius:50%;margin-left:-5px;background:#fff;border:2px solid #2563eb}.dot.f{background:#2563eb}
 .row.snd{height:56px}.row.snd>b{top:18px}.row.snd svg{position:absolute;left:0;top:3px;height:50px}
 .vad{position:absolute;top:3px;height:50px;background:#dbeafe;border-radius:3px}
-.row.txt>b{top:5px}.ck{position:absolute;font-size:12.5px;line-height:16px;white-space:nowrap;padding-left:5px;border-left:2px solid #2563eb;color:#6b7280;font-style:italic}
-.ck.f{color:#111;font-style:normal;font-weight:600;border-left-width:3px}
-.ck.r{padding:0 5px 0 0;border-left:0;border-right:2px solid #2563eb}.ck.f.r{border-right-width:3px}
+.tk{position:absolute;top:7px;height:16px;border-left:2px solid #93c5fd}.tk.f{top:4px;height:22px;border-left:4px solid #1d4ed8;margin-left:-1px}
+.rh{position:absolute;top:9px;width:12px;height:12px;margin-left:-6px;transform:rotate(45deg);background:#fff;border:2px solid #7c3aed}.rh.y{background:#7c3aed}
 .lab{position:absolute;top:5px;font-size:13px;white-space:nowrap;background:#fff;padding:0 3px;z-index:2}.lab.y{font-weight:700;color:#c2410c}
 .v{position:absolute;top:22px;bottom:24px;width:0;border-left:2px solid #dc2626;z-index:1}.v.old{border-left:2px dashed #9ca3af}
 .vt{position:absolute;top:0;font-size:13px;white-space:nowrap;transform:translateX(-50%);color:#dc2626;font-weight:600}.vt.old{color:#6b7280;font-weight:400;top:11px}
 #axis{position:relative;height:24px;margin-left:var(--l);border-top:2px solid #111}
 #axis i{position:absolute;top:0;height:6px;border-left:2px solid #111}#axis span{position:absolute;top:7px;font-size:12px;color:#555;transform:translateX(-50%);white-space:nowrap}
 .lg{display:grid;grid-template-columns:46px 1fr 46px 1fr;gap:5px 10px;align-items:center;margin:10px 0 0;padding:10px 12px;background:#fafafa;border:1px solid #eee;border-radius:6px;font-size:14px}
-.lg i{position:relative;height:22px;font-style:normal}.lg u{text-decoration:none}.lg .bar{left:0;top:2px;width:42px}.lg .dot{left:21px;top:5px}
+.lg i{position:relative;height:22px;font-style:normal}.lg u{text-decoration:none}.lg .bar{left:0;top:2px;width:42px}
 .lg .wv{position:absolute;left:6px;top:7px;width:30px;height:8px;background:repeating-linear-gradient(90deg,#1d4ed8 0 2px,transparent 2px 4px)}
 .lg .ln{position:absolute;left:20px;top:0;height:22px;border-left:2px solid #dc2626}.lg .ln.old{border-left:2px dashed #9ca3af}
 #cur{position:absolute;top:22px;bottom:24px;width:0;border-left:1.5px solid #111;pointer-events:none;z-index:3;display:none}
 #now{margin:8px 0 0;padding:9px 12px;min-height:96px;border:1px solid #d1d5db;border-radius:6px;font-size:14.5px;display:grid;grid-template-columns:150px 1fr;gap:3px 10px;align-content:start}
-#now>b{font-weight:600;color:#555;text-align:right}#now .open{color:#6b7280;font-style:italic}#now .done{font-weight:600}#now .hint{grid-column:1/3;color:#6b7280}
-.tag{display:inline-block;font-size:12px;font-style:normal;font-weight:600;border-radius:4px;padding:0 6px;margin-left:6px;vertical-align:1px}
-.tag.o{background:#e0e7ff;color:#3730a3}.tag.c{background:#111;color:#fff}.tag.w{background:#f3f4f6;color:#6b7280}
+#now>b{font-weight:600;color:#555;text-align:right}#now .open{background:#bfdbfe;border-radius:2px;padding:1px 2px;box-decoration-break:clone;-webkit-box-decoration-break:clone}#now .hint{grid-column:1/3;color:#6b7280}
+.tag{display:inline-block;font-size:12px;font-weight:500;border-radius:4px;padding:0 6px;margin-left:6px;vertical-align:1px}
+.tag.w{background:#f3f4f6;color:#6b7280}
 .or{color:#c2410c;font-weight:600}.red{color:#dc2626;font-weight:600}.gy{color:#6b7280}
 table{border-collapse:collapse;font-size:14.5px;width:100%}td,th{text-align:left;padding:3px 10px 3px 0;vertical-align:top;border-bottom:1px solid #f0f0f0}
 th{font-size:13px;color:#555;font-weight:600}td.n{white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -149,15 +149,15 @@ th{font-size:13px;color:#555;font-weight:600}td.n{white-space:nowrap;font-varian
 <div id="tl"></div>
 <div id="now"></div>
 <div class="lg">
- <i><u class="bar ph"></u></i><span><b>Фраза</b>: одна реплика целиком, от первого слова до момента, когда она закрыта</span>
+ <i><u class="rh" style="left:14px;top:5px"></u><u class="rh y" style="left:32px;top:5px"></u></i><span><b>Smart Turn, локальная модель</b>: на каждой паузе решает по интонации; пустой ромб «не договорил», закрашенный «договорил»</span>
  <i><u class="bar no"></u></i><span><b>Вопрос к Decisions, ответ «нет»</b>: длина полосы — сколько думал, число рядом — вероятность «да»</span>
- <i><u class="bar sp" style="background:#dbeafe;border:0"></u><u class="wv"></u></i><span><b>Звук речи</b>: тёмные столбики — громкость микрофона, светлый фон — где Silero слышит голос</span>
+ <i><u class="bar sp" style="background:#dbeafe;border:0"></u><u class="wv"></u></i><span><b>Звук речи</b>: тёмные столбики — громкость микрофона, светлый фон — где Silero, вторая локальная модель, слышит голос</span>
  <i><u class="bar yes"></u></i><span><b>Вопрос к Decisions, ответ «да»</b>: число рядом жирное</span>
- <i><u class="ck" style="left:2px;top:3px">текст</u></i><span><b>Открытый кусок текста</b> от Deepgram стоит там, где пришёл; слова ещё могут поменяться; «+» — добавка к прошлому куску</span>
+ <i><u class="tk" style="left:20px;top:3px"></u></i><span><b>Открытый кусок текста</b> от Deepgram, отметка в момент прихода; слова ещё могут поменяться</span>
  <i><u class="bar cl">№1</u></i><span><b>Claude работает</b> над запросом с этим номером</span>
- <i><u class="ck f" style="left:2px;top:3px">текст</u></i><span><b>Закрытый кусок текста</b>: слова окончательные</span>
+ <i><u class="tk f" style="left:20px;top:0"></u></i><span><b>Закрытый кусок текста</b>, коммит: слова окончательные</span>
  <i><u class="ln"></u></i><span><b>Стоп</b>: ход Claude остановлен ранним вопросом, фраза ещё звучит</span>
- <i><u class="ln" style="border-color:#111"></u></i><span><b>Курсор</b>: води мышкой по шкале — панель под ней покажет состояние на этот момент</span>
+ <i><u class="ln" style="border-color:#111"></u></i><span><b>Курсор</b>: води мышкой по шкале — панель под ней покажет состояние на этот момент; закрытый текст обычный, открытый выделен</span>
  <i><u class="ln old"></u></i><span><b>Откат</b>: здесь ход остановился бы без раннего вопроса</span>
 </div>
 <h2>Все вопросы к Decisions по порядку</h2>
@@ -183,26 +183,17 @@ function draw() {
   const tl = document.getElementById('tl'), W = tl.clientWidth - 150, S = W / LEN, x = t => (t - T0) * S;
   const row = (name, cls = '') => `<div class="row"><b class="${cls}">${name}</b>`;
   const bar = (a, b, cls, text = '', tip = text) => `<div class="bar ${cls}" title="${esc(tip)}" style="left:${x(a)}px;width:${Math.max(6, x(b) - x(a))}px">${esc(text)}</div>`;
-  let h = row('Фраза') + D.phrases.map(p => bar(p.a, p.b, 'ph', p.text)).join('') + '</div>';
+  let h = '';
   // Звук: отрезки речи по Silero фоном, поверх — громкость микрофона зеркальной гистограммой.
   const L = D.level, bars = L ? L.v.map((v, i) => { const hh = Math.max(0.6, Math.sqrt(v / 100) * 24);
     return `<rect x="${x(L.from + i * L.step).toFixed(1)}" y="${(25 - hh).toFixed(1)}" width="${Math.max(1, L.step * S - 0.6).toFixed(1)}" height="${(hh * 2).toFixed(1)}"/>`; }).join('') : '';
   h += '<div class="row snd"><b>Звук речи</b>' + D.speech.map(([a, b]) => `<div class="vad" title="речь ${num(b - a)} с" style="left:${x(a)}px;width:${x(b) - x(a)}px"></div>`).join('') +
     `<svg width="${W}" height="50" fill="#1d4ed8">${bars}</svg></div>`;
-  // Текст: каждый кусок стоит там, где он пришёл; подпись — только новое в нём. Строк столько, чтобы подписи не налезали.
-  let prev = null; const ends = [];
-  // Открытый кусок, который тут же (быстрее 0,2 с) закрылся тем же текстом, отдельной подписью не нужен.
-  const cks = D.chunks.filter((c, i, all) => c.final || !(all[i + 1]?.final && all[i + 1].t - c.t < 0.2 && all[i + 1].text.startsWith(c.text))).map(c => {
-    const add = prev && !prev.final && c.text.startsWith(prev.text) ? c.text.slice(prev.text.length).trim() : null, text = add ? '+ ' + add : c.text;
-    prev = c;
-    const left = x(c.t), width = text.length * 6.9 + 14;
-    const back = left + width > W;  // у правого края подпись уходит влево от своей отметки
-    let r = ends.findIndex(e => e <= (back ? left - width : left));
-    if (r < 0) r = ends.length;
-    ends[r] = back ? left : left + width;
-    return `<span class="ck ${c.final ? 'f' : ''} ${back ? 'r' : ''}" title="${clock(c.t, true)} ${c.final ? 'закрытый' : 'открытый'}: ${esc(c.text)}" ` +
-      `style="${back ? `right:${W - left}px` : `left:${left}px`};top:${4 + r * 18}px">${esc(text)}</span>`; });
-  h += `<div class="row txt" style="height:${ends.length * 18 + 8}px"><b>Текст Deepgram</b>${cks.join('')}</div><div class="row gap"></div>`;
+  // Локальная модель конца реплики: вердикт на каждой паузе в звуке.
+  h += row('Smart Turn') + D.local.map(m => `<div class="rh ${m.yes ? 'y' : ''}" title="${clock(m.t, true)} по интонации: ${m.yes ? 'договорил' : 'не договорил'}" style="left:${x(m.t)}px"></div>`).join('') + '</div>';
+  // Текст: отметка там, где кусок пришёл; сам текст — в панели под шкалой, по курсору.
+  h += row('Текст Deepgram') + D.chunks.map(c => `<div class="tk ${c.final ? 'f' : ''}" title="${clock(c.t, true)} ${c.final ? 'закрытый' : 'открытый'}: ${esc(c.text)}" style="left:${x(c.t)}px"></div>`).join('') +
+    '</div><div class="row gap"></div>';
   for (const kind of ['early', 'done', 'route'])
     h += row(NAME[kind], 'or') + D.decisions.filter(c => c.kind === kind).map((c, i, all) =>
       bar(c.t - c.d, c.t, c.yes ? 'yes' : 'no', '', `«${c.text}» → ${num(c.p)}, думал ${num(c.d)} с. ${outcome(c)}`) +
@@ -240,17 +231,19 @@ function at(t) {
   const got = phrase ? D.chunks.filter(c => c.t >= phrase.a && c.t <= t) : [], tail = got[got.length - 1];
   const done = got.filter(c => c.final).map(c => c.text).join(' '), open = tail && !tail.final ? tail.text : '';
   const text = phrase
-    ? (done || open ? `<span class="done">${esc(done)}</span> <span class="open">${esc(open)}</span>` +
-        (open ? '<span class="tag o">открыто: слова ещё могут поменяться</span>' : '<span class="tag c">коммит: слова окончательные</span>')
+    ? (done || open ? `${esc(done)} ${open ? `<span class="open">${esc(open)}</span>` : ''}` +
+        (open ? '<span class="tag w">выделено — ещё открыто</span>' : '<span class="tag w">всё закрыто</span>')
       : '<span class="gy">речь идёт, текста от Deepgram ещё нет</span>')
-    : last ? `<span class="done">${esc(last.text)}</span><span class="tag w">фраза закрыта ${num(t - last.b, 1)} с назад</span>` : '<span class="gy">ещё ничего не сказано</span>';
+    : last ? `${esc(last.text)}<span class="tag w">фраза закрыта ${num(t - last.b, 1)} с назад</span>` : '<span class="gy">ещё ничего не сказано</span>';
   const speaking = D.speech.some(([a, b]) => t >= a && t <= b), quiet = D.speech.filter(s => s[1] < t).pop();
+  const turn = D.local.filter(m => m.t <= t).pop();
   const ask = D.asks.filter(a => a.t <= t).pop(), cut = ask && D.cuts.find(c => c.id === ask.id && c.t <= t);
   const call = D.decisions.filter(c => c.t <= t).pop(), going = D.decisions.find(c => c.t - c.d <= t && c.t > t);
   document.getElementById('now').innerHTML =
     `<b>Момент</b><span>${clock(t, true)}, ${num(t - T0, 1)} с от начала отрезка</span>` +
     `<b>Собрано</b><span>${text}</span>` +
-    `<b>Ты</b><span>${speaking ? 'говоришь' : quiet ? `молчишь ${num(t - quiet[1], 1)} с` : 'молчишь'}</span>` +
+    `<b>Ты</b><span>${speaking ? 'говоришь' : quiet ? `молчишь ${num(t - quiet[1], 1)} с` : 'молчишь'}` +
+      (turn ? `<span class="gy"> · Smart Turn ${num(t - turn.t, 1)} с назад: ${turn.yes ? 'договорил' : 'не договорил'}</span>` : '') + '</span>' +
     `<b>Claude</b><span>${!ask ? 'свободен' : cut ? `остановлен на запросе №${ask.id}, ждёт конца фразы` : `работает над запросом №${ask.id}`}</span>` +
     `<b>Decisions</b><span>${going ? `думает: ${NAME[going.kind]}, «${esc(going.text)}»` : call ? `последний ответ: ${NAME[call.kind]} ${num(call.p)}, ${outcome(call)}` : 'вопросов ещё не было'}</span>`;
 }
@@ -297,7 +290,7 @@ def main() -> None:
     data = collect(rows, *span(rows, *(args[1:3] + [None, None])[:2]))
     data["level"] = level(rows, TRACES / f"{name}.wav", data["from"], data["to"])
     command = f"uv run --script ~/.claude/gv/decisions_view.py {name} {clock(data['from'])} {clock(data['to'])}" + (f' -o "{out}"' if out else "")
-    height = 880 + 46 * len(data["decisions"]) + 140 * len(data["cuts"])  # рамка в Excalidraw: строки таблицы бывают в две строки
+    height = 860 + 46 * len(data["decisions"]) + 140 * len(data["cuts"])  # рамка в Excalidraw: строки таблицы бывают в две строки
     page = (PAGE.replace("__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/")).replace("__NAME__", name)
             .replace("__COMMAND__", command).replace("__HEIGHT__", str(height)))
     target = out or TRACES / f"{name}.decisions.html"
