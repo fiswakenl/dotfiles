@@ -154,7 +154,7 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 #log{margin:12px 0 0 var(--l);font:12.5px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;color:#374151;min-height:170px}
 #log .hd{color:#9ca3af;text-transform:uppercase;letter-spacing:.04em;font-size:11.5px}
 #log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#log .dt{display:inline-block;width:70px;text-align:right;color:#9ca3af;margin-right:12px}
-#log .who{display:inline-block;width:150px;color:#6b7280}#log .near{background:#fef3c7}#log .near .dt{color:#b45309}
+#log .who{display:inline-block;width:150px;color:#6b7280}#log .near{background:#fef3c7}#log .fut{opacity:.4}#log .near .dt{color:#b45309}
 .dim{color:#9ca3af}.key{font-weight:600}.red{color:#dc2626;font-weight:600}.past{color:#6b7280}#cap>b.t0{color:#111}
 </style>
 <div class="w">
@@ -293,12 +293,13 @@ function at(t) {
       `<span class="val">${v}</span><span class="ago">${when == null ? '' : '−' + num(t - when) + ' с'}</span></div>`; }).join('');
 }
 
-// Лог: LOG_N событий вокруг курсора; ближайшее к нему — выделено, время — относительно курсора.
+// Лог: LOG_N событий вокруг курсора, время — относительно курсора. Выделено последнее уже случившееся — то же, что в легенде;
+// будущие — бледнее.
 function log(t) {
-  const i = EVENTS.reduce((best, e, j) => Math.abs(e[0] - t) < Math.abs(EVENTS[best][0] - t) ? j : best, 0);
+  const i = Math.max(0, EVENTS.findLastIndex(e => e[0] <= t));
   const from = Math.max(0, Math.min(i - (LOG_N >> 1), EVENTS.length - LOG_N));
   document.getElementById('log').innerHTML = '<div class="hd">события рядом с курсором</div>' + EVENTS.slice(from, from + LOG_N).map(([at, who, what], j) =>
-    `<div class="${from + j === i ? 'near' : ''}"><span class="dt">${at - t >= 0 ? '+' : '−'}${num(Math.abs(at - t))} с</span><span class="who">${who}</span>${esc(what)}</div>`).join('');
+    `<div class="${from + j === i ? 'near' : at > t ? 'fut' : ''}"><span class="dt">${at - t >= 0 ? '+' : '−'}${num(Math.abs(at - t))} с</span><span class="who">${who}</span>${esc(what)}</div>`).join('');
 }
 
 // Подсветить отметки, сработавшие рядом с t (в пределах HIT_PX пикселей при текущем масштабе), и их дорожки; вернуть их строки панели.
