@@ -38,7 +38,7 @@ ccg            # Claude с GV и мостом отката (функция в ~/
   - `deepgram.py`, `openai.py` — распознавание;
   - `text.py` — замена Gemini без звука и сети для тестов (`GV_TEXT_ONLY=1`).
 - `prompts/gemini.md` — инструкция Gemini; `prompts/orchestrator.md` — правила оркестратора.
-- `hooks/register.ts` — плагин: забирает работу `/next` — ask шлёт в окно Claude через мост, quick — веткой разговора, реплику на решение — оркестратору; ответ — `/answer`.
+- `hooks/register.ts` — плагин: забирает работу `/next` — ask шлёт в окно Claude через мост (командами `/call` сервиса), quick — веткой разговора, реплику на решение — оркестратору; ответ — `/answer`. О каждом ходе Claude, и набранном руками, сообщает сервису: пока ход идёт, новый ask ждёт в ядре. Номера запросов — номера одного запуска сервиса (заголовок `X-GV-Epoch`): после перезапуска плагин их забывает, а сервис отвергает старые.
 - `hooks/orchestrator.ts` — промпт оркестратора и разбор его решения, без обращений к движку.
 - `preload.mjs` + `native/bridge.mjs` — мост в окно Claude: `status`, `list`, `send`, `rewind`. Сокет `$TMPDIR/gv-UID/PID.sock`, свой у каждого процесса.
 
@@ -50,14 +50,14 @@ ccg            # Claude с GV и мостом отката (функция в ~/
 curl -s localhost:8790/call -d '{"name":"ask","args":{"text":"Что в todo?"}}'
 curl -s localhost:8790/call -d '{"name":"utter","args":{"text":"Что в todo?"}}'   # как реплика адаптера распознавания
 curl -s localhost:8790/call -d '{"name":"rewind","args":{"target":1}}'
-python3 ~/.claude/gv/native/client.py list      # мост напрямую, без сервиса
+curl -s localhost:8790/call -d '{"name":"list"}'                              # мост: сообщения в окне Claude
 ```
 
 ## Проверки
 
 ```sh
 uv run --script ~/.claude/gv/tests/sim_test.py   # все сценарии на ядре, пара секунд
-claude plugin test ~/.claude/gv                  # оркестратор: промпт и разбор решения
+claude plugin test ~/.claude/gv                  # оркестратор и плагин вокруг ненастоящего сервиса
 uv run --script ~/.claude/gv/tests/run.py        # сценарии Gemini на живом ccg в tmux, без голоса, ~3 мин
 ```
 

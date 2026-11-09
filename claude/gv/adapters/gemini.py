@@ -142,6 +142,7 @@ class Live(Adapter):
             rec_close(close=why, audio_sent_bytes=self.sent, audio_got_bytes=self.got)
             if self.ws is ws:
                 self.ws = None
+            self.speaking = self.voiced = False  # чтение, если шло, оборвалось вместе с сокетом
             self.core.turn_end()  # ход, которого ждали, уже не закончится
             emit({"state": "Gemini спит"})
 
@@ -202,13 +203,16 @@ class Live(Adapter):
             self.core.turn_end()
 
     # ── что уходит в Gemini ──
-    async def say(self, text: str) -> None:
+    async def say(self, text: str) -> bool:
+        """False — не ушло: ядро вернёт ответ в очередь и попробует позже."""
         self.speaking, self.voiced = True, False
         try:
             await self.send({"realtimeInput": {"text": text}})
+            return True
         except Exception as ex:  # noqa: BLE001
+            self.speaking = False
             emit({"error": f"отправка в Gemini: {type(ex).__name__}: {ex}"})
-            self.core.turn_end()
+            return False
 
     async def listen(self, args: dict) -> str:
         """Речь вместо микрофона: args.pcm — base64 PCM 16 бит, 16 кГц, моно (проверка через TTS)."""

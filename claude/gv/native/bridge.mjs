@@ -13,17 +13,37 @@ const textOf = m => {
 const rows = () => controller.transcript.getSnapshot();
 const users = () => rows().filter(m=>m.type==='user' && !m.isMeta && !textOf(m).startsWith('<local-command-') && !textOf(m).startsWith('<command-name>'));
 
-async function send(text) {
+// Отправка самого поля ввода, без подписи плагина. Недописанное человеком (текст, вставки, режим) отправка стёрла бы:
+// оно запомнено до отправки (у отката — до него) и возвращается в поле, если человек за это время не начал новое.
+async function send(text, kept = draftOf()) {
  if (typeof text !== 'string' || !text.trim()) return {error:'text_required'};
+ const draft = controller.draft;
  const before = new Set(users().map(m=>m.uuid));
- controller.draft.replaceValue(text);
- if (!controller.draft.submit(text)) return {error:'composer_not_mounted'}; // отправка самого поля ввода, без подписи плагина
+ draft.setMode('prompt'); // в режиме bash поле выполнило бы текст командой
+ draft.replaceValue(text);
+ if (!draft.submit(text)) { restore(kept); return {error:'composer_not_mounted'}; }
+ let result = {queued:true}; // Claude занят: поле ввода поставило сообщение в очередь, в истории оно появится, когда до него дойдёт
  for (let i = 0; i < 150; i++) {
   const m = users().find(m=>!before.has(m.uuid) && textOf(m)===text);
-  if (m) return {uuid:m.uuid};
+  if (m) { result = {uuid:m.uuid}; break; }
   await new Promise(r=>setTimeout(r,20));
  }
- return {queued:true}; // Claude занят: поле ввода поставило сообщение в очередь, в истории оно появится, когда до него дойдёт
+ restore(kept);
+ return result;
+}
+
+const draftOf = () => {
+ const d = controller.draft;
+ return {value:d.value, cursor:d.cursorOffset, mode:d.mode, pasted:d.pastedContents};
+};
+
+function restore({value, cursor, mode, pasted}) {
+ const draft = controller.draft;
+ if (!value || draft.value) return; // нечего возвращать или человек уже пишет новое
+ draft.setMode(mode);
+ if (pasted && Object.keys(pasted).length) draft.setPastedContents(pasted);
+ draft.replaceValue(value);
+ draft.setCursorOffset(cursor);
 }
 
 async function rewind({target, text}) {
@@ -33,6 +53,7 @@ async function rewind({target, text}) {
  if (busy) return {error:'rewind_in_progress'};
  busy = true;
  try {
+  const kept = draftOf(); // откат кладёт в поле текст стёртого сообщения: недописанное человеком — до него
   const before = rows();
   const index = before.findIndex(m=>m.uuid===found.uuid);
   await controller.turn.cancel(); // то же, что делает меню Rewind
@@ -40,7 +61,7 @@ async function rewind({target, text}) {
   await new Promise(r=>setImmediate(r));
   if (rows().some(m=>m.uuid===found.uuid)) return {error:'restore_did_not_apply'};
   const removed = before.slice(index).filter(m=>m.type==='user').map(m=>m.uuid);
-  return {removed, ...(text === undefined ? {} : await send(text))};
+  return {removed, ...(text === undefined ? {} : await send(text, kept))};
  } finally { busy = false; }
 }
 

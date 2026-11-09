@@ -3,12 +3,13 @@ import { decide, prompt, type Route } from "./orchestrator.ts";
 
 // Голос ⇄ сессия Claude Code.
 //
-// Сервис (voice.py, логика — core.py) слушает человека через голосовой адаптер (adapters/), адаптер выбирается настройкой voice.
-// Плагин забирает у сервиса работу ручкой /next:
-// - ask — сообщением в окно Claude через мост (native/bridge.mjs), с откатом, если это поправка;
+// Сервис (voice.py, логика — core.py) слушает человека через голосовой адаптер (adapters/): адаптер — настройка voice плагина
+// или выбор командой /gv <имя> поверх неё. Плагин забирает у сервиса работу ручкой /next:
+// - ask — сообщением в окно Claude через мост (native/bridge.mjs, команды — через /call сервиса), с откатом, если это поправка;
 // - quick — веткой разговора ($.model.fork), основной ход не трогает;
 // - route — реплика адаптера распознавания без решения: оркестратор ($.model.complete) решает, ask это, поправка или quick.
-// Ответ — ручкой /answer; Gemini его озвучит, у адаптеров распознавания человек читает его в окне.
+// Ответ — ручкой /answer; Gemini его озвучит, у адаптеров распознавания человек читает его в окне. О каждом ходе Claude, и набранном
+// руками, плагин сообщает сервису (/call turn): пока ход идёт, новый ask ждёт в ядре, а quick и реплики идут своим чередом.
 // Сервис поднимается на старте сессии, перезапускается при правке своих файлов и выходит сам, если плагин перестал пинговать;
 // правка этого файла или настроек перезагружает плагин, а с ним и сервис. `$` через импорт не передаётся: все обращения к движку — здесь.
 
@@ -26,12 +27,16 @@ let BASE = `http://127.0.0.1:${PORT}`;
 
 let started = false;
 let running = false; // голос включён в этом экземпляре плагина
-let healing = false;
-let current = 0; // запрос, над которым идёт голосовой ход; 0 — ход не голосовой
+let loop = 0; // номер цикла опроса: включение заводит новый, прежний видит чужой номер и выходит
+let launching: Promise<boolean> | null = null; // запуск сервиса идёт: второй не начинаем, ждём этот
+let epoch = ""; // номер запуска сервиса (X-GV-Epoch): номера запросов — его, перезапуск их обнуляет
 let mainBusy = false; // идёт любой ход основного Claude — и голосовой, и набранный руками
+
+// Номера запросов — номера ядра текущего запуска сервиса: новый запуск их обнуляет (adopt).
+let current = 0; // запрос, над которым идёт голосовой ход; 0 — ход не голосовой
 let lastVoice = 0; // последний отвеченный голосовой запрос: ход без новой реплики (итог фоновой задачи) — его продолжение
 const voiceMessages = new Map<number, string>(); // номер запроса → UUID его сообщения в истории Claude
-const queued = new Map<string, number>(); // текст сообщения, вставшего в очередь Claude, → номер запроса
+const expected = new Map<string, number>(); // текст отправленного сообщения → номер запроса: его ход ещё не начался
 const quickRows = atom({ plugin: "gv", key: "quickRows" } as const, {} as Record<string, { id: number; q: string; a: string }[]>);
 const quickOpen = atom({ plugin: "gv", key: "quickOpen" } as const, [] as number[]);
 
@@ -42,26 +47,44 @@ const voiceFile = async ($): Promise<string> => `${await $.env.get("HOME")}/.cla
 
 // ── сервис ────────────────────────────────────────────────────────────────────
 
+// Номер запуска идёт с каждым запросом: сервис другого запуска ответит 409, и ответ на старый номер не попадёт в чужой запрос.
 const call = ($, path: string, init: { method?: string; body?: string } = {}) =>
-  $.http.fetch(`${BASE}${path}`, { ...init, headers: { "content-type": "application/json" } });
+  $.http.fetch(`${BASE}${path}`, { ...init, headers: { "content-type": "application/json", ...(epoch ? { "x-gv-epoch": epoch } : {}) } });
 
 const post = ($, path: string, body: unknown = {}) => call($, path, { method: "POST", body: JSON.stringify(body) });
 
 const answer = ($, id: number, body: { text?: string; error?: string }) => post($, `/answer?id=${id}`, body).catch(() => {});
 
+// Сервис сообщает ядру, идёт ли ход Claude.
+const turn = ($) => (running ? post($, "/call", { name: "turn", args: { working: mainBusy } }).catch(() => {}) : undefined);
+
+// Новый запуск сервиса — новое ядро: прежние номера запросов ничего не значат, а идёт ли сейчас ход Claude, ядро должно узнать.
+function adopt($, next: string): void {
+  if (next === epoch) return;
+  epoch = next;
+  current = lastVoice = 0;
+  voiceMessages.clear();
+  expected.clear();
+  void turn($);
+}
+
 // Хозяин сервиса записан в файле: новый экземпляр плагина (другая сессия или перезагрузка) пишет туда свой номер, старый видит
-// чужой номер и молча уходит — не опрашивает и не поднимает сервис заново.
+// чужой номер и молча уходит — не опрашивает, не пингует и не гасит сервис.
 async function tokenFile($): Promise<string> {
   return `${await $.env.get("HOME")}/.claude/gv${PORT === 8790 ? "" : "-" + PORT}.token`;
 }
 
-async function stale($): Promise<boolean> {
-  const owner = String(await $.fs.read(await tokenFile($)).catch(() => "")).trim();
-  return owner !== "" && owner !== TOKEN;
+async function mine($): Promise<boolean> {
+  return String(await $.fs.read(await tokenFile($)).catch(() => "")).trim() === TOKEN;
 }
 
-// Поднять сервис отдельным процессом (вывод — ~/.claude/gv.out); true — отвечает.
-async function launch($, options): Promise<boolean> {
+// Поднять сервис отдельным процессом (вывод — ~/.claude/gv.out); true — отвечает. Запуски не накладываются: пока идёт один,
+// остальные получают его же результат.
+function launch($, options): Promise<boolean> {
+  return (launching ??= start($, options).finally(() => (launching = null)));
+}
+
+async function start($, options): Promise<boolean> {
   await $.fs.write(await tokenFile($), TOKEN).catch(() => {});
   await post($, "/quit").catch(() => {});
   for (let i = 0; i < 20; i++) {
@@ -86,25 +109,24 @@ async function launch($, options): Promise<boolean> {
 }
 
 // Цикл работы от сервиса: ask и route — по одному, quick — сразу в фоне. Сервис не отвечает несколько раз подряд — поднимаем заново.
-async function poll($, options): Promise<void> {
+async function poll($, options, me: number): Promise<void> {
   let down = 0;
-  while (running) {
-    if (await stale($)) return; // сервис теперь у другого экземпляра плагина или остановлен: молча уходим
+  const alive = () => running && me === loop;
+  while (alive()) {
+    if (!(await mine($))) return void ((running = false), $.ui.status("голос в другой сессии")); // сервис теперь у другого экземпляра
     let r;
     try {
       r = await call($, "/next?wait=1");
       down = 0;
     } catch {
       await sleep(RETRY_MS);
-      if (!running || (await stale($))) return;
-      if (++down >= 3 && !healing) {
-        healing = true;
+      if (alive() && ++down >= 3) {
         down = 0;
         await launch($, options).catch(() => false);
-        healing = false;
       }
       continue;
     }
+    if (r.headers["x-gv-epoch"]) adopt($, r.headers["x-gv-epoch"]);
     if (r.status !== 200 || !r.text) {
       if (r.status !== 204) await sleep(RETRY_MS);
       continue;
@@ -125,32 +147,31 @@ async function poll($, options): Promise<void> {
 
 // ── работа ────────────────────────────────────────────────────────────────────
 
-// Мост в окно Claude теми же именами, что у /call: send, rewind, list.
+// Мост в окно Claude — через сервис, теми же именами: send, rewind, list.
 async function bridge($, name: string, args: Record<string, unknown>): Promise<any> {
-  const socket = await $.env.get("GV_NATIVE_SOCKET");
-  if (!socket) throw new Error("мост не подключён: запустите Claude через ccg");
-  const out = await $.process.run(["python3", `${$.plugin.root}/native/client.py`, "--socket", socket, name, JSON.stringify(args)]);
-  const result = JSON.parse(out.stdout || "{}");
-  if (out.exitCode !== 0 || result.error) throw new Error(result.error || out.stderr || "мост не ответил");
+  const r = await post($, "/call", { name, args });
+  const result = JSON.parse(r.text || "{}").result ?? {};
+  if (!r.ok || result.error) throw new Error(result.error || `мост не ответил: HTTP ${r.status}`);
   return result;
 }
 
-// ask: в окно Claude как набранное руками; поправка — откат до сообщения прежнего запроса и новый текст.
+// ask: в окно Claude как набранное руками; поправка — откат до сообщения прежнего запроса и новый текст. Новое сообщение ядро
+// отдаёт, только когда Claude свободен; поправка откатывает идущий ход сама. Чей ход, узнаём по тексту на его старте (turn.start).
 async function deliver($, r: { id: number; text: string; rewind: number | null }): Promise<void> {
   const text = `${MARK} ${r.text}`;
   const target = r.rewind ? voiceMessages.get(r.rewind) : undefined;
-  if (r.rewind && !target) throw new Error(`сообщение запроса №${r.rewind} не найдено в истории`);
-  // Новое сообщение — только в свободное окно: посреди чужого хода поле ввода его теряет. Поправка откатывает ход сама.
-  while (mainBusy && !target) await sleep(300);
-  current = 0; // завершение отменяемого хода не выдаём за ответ
-  // Сообщение, которое поправляем, уже убрано из истории (откат руками) — поправлять нечего: реплика уходит новой.
-  const result = target
-    ? await bridge($, "rewind", { target, text }).catch((err) => (/target_not_found/.test(String(err)) ? bridge($, "send", { text }) : Promise.reject(err)))
-    : await bridge($, "send", { text });
-  for (const [id, uuid] of voiceMessages) if (result.removed?.includes(uuid)) voiceMessages.delete(id);
-  if (result.queued) return void queued.set(text, r.id); // Claude занят: узнаем запрос, когда начнётся его ход
-  voiceMessages.set(r.id, result.uuid);
-  current = r.id;
+  expected.set(text, r.id);
+  // Сообщения, которое поправляем, в истории уже нет (откат руками) или оно из прошлого запуска сервиса — реплика уходит новой.
+  const result = await (target
+    ? bridge($, "rewind", { target, text }).catch((err) => (/target_not_found/.test(String(err)) ? bridge($, "send", { text }) : Promise.reject(err)))
+    : bridge($, "send", { text })
+  ).catch((err) => Promise.reject((expected.delete(text), err)));
+  if (result.removed?.length) { // ядру — какие запросы стёрты: их ходы больше не ответят
+    const removed = [...voiceMessages].filter(([, uuid]) => result.removed.includes(uuid)).map(([id]) => id);
+    for (const id of removed) voiceMessages.delete(id);
+    await post($, "/call", { name: "rewound", args: { id: r.id, removed } }).catch(() => {});
+  }
+  if (result.uuid) voiceMessages.set(r.id, result.uuid);
 }
 
 // Быстрый вопрос: ветка разговора отвечает по тому, что в нём уже есть; основной ход не трогаем, инструменты не нужны.
@@ -193,6 +214,12 @@ async function route($, item: Route): Promise<void> {
   $.ui.status(d.name === "quick" ? `⚡ quick №${n}` : d.replaces ? `↺ поправка №${d.replaces} → №${n}` : `→ новое №${n}`);
 }
 
+// Ход упал на ошибке API или Claude отказался — человек узнаёт об этом, как о любом сбое запроса.
+function failure(e): string {
+  if (e.reason === "refusal") return `Claude отказался отвечать${e.refusal?.explanation ? `: ${e.refusal.explanation}` : ""}`;
+  return "ход Claude оборвался ошибкой";
+}
+
 // ── включение и выбор адаптера ────────────────────────────────────────────────
 
 // Файл ~/.claude/gv.state ("on" / "off"): включён ли голос. Переживает перезагрузку плагина и перезапуск сессии; меняет его команда /gv.
@@ -200,7 +227,7 @@ async function stateFile($): Promise<string> {
   return (await $.env.get("GV_STATE_FILE")) || `${await $.env.get("HOME")}/.claude/gv.state`;
 }
 
-// Включить: стать хозяином, поднять сервис, открыть страницу, запустить цикл.
+// Включить: стать хозяином, запустить цикл, поднять сервис.
 async function turnOn($, options): Promise<void> {
   if (running) return;
   running = true;
@@ -208,12 +235,12 @@ async function turnOn($, options): Promise<void> {
   // Хозяином становимся сразу: иначе собственный опрос успеет прочитать чужой номер в файле и решит, что его вытеснили.
   await $.fs.write(await tokenFile($), TOKEN).catch(() => {});
   $.ui.status(undefined);
-  void poll($, options);
+  void poll($, options, ++loop);
   let up = false;
   for (let attempt = 0; attempt < TRIES && !up && running; attempt++) up = await launch($, options);
   if (!running) return;
   if (!up) return void $.ui.status("сервис не поднялся");
-  $.ui.status(`${ADAPTERS[voiceOf(options)]} · ${BASE}`); // страница журнала — по адресу из статуса, сама не открывается
+  $.ui.status(`${ADAPTERS[voiceOf(options)]} · ${BASE}`); // страница журнала — по адресу из статуса
 }
 
 // Выключить: цикл стоит, сервис и сокеты закрыты, выключенность запомнена.
@@ -224,16 +251,18 @@ async function turnOff($): Promise<void> {
   $.ui.status("выкл");
 }
 
-// Другой адаптер — это настройка voice плагина, та же строка, что в /config: выбор запомнен в настройках, а её смена
-// перезагружает плагин, и новый экземпляр поднимает сервис с новым адаптером. Выбрать адаптер — заодно включить голос.
+// Другой адаптер: выбор запомнен в ~/.claude/gv.voice поверх настройки voice, сервис перезапускается с ним, сессия остаётся.
+// Выбрать адаптер — заодно включить голос.
 async function choose($, options, name: string): Promise<string> {
   const same = voiceOf(options) === name;
   chosen = name;
   await $.fs.write(await voiceFile($), name).catch(() => {});
-  await $.fs.write(await stateFile($), "on").catch(() => {});
   if (!running) return void turnOn($, options), `вкл · ${ADAPTERS[name]}`;
   if (same) return `уже ${ADAPTERS[name]}`;
-  void launch($, options).then((up) => $.ui.status(up ? `${ADAPTERS[name]} · ${BASE}` : "сервис не поднялся"));
+  void (async () => {
+    await launching; // идёт запуск со старым адаптером — новый после него
+    $.ui.status((await launch($, options)) ? `${ADAPTERS[name]} · ${BASE}` : "сервис не поднялся");
+  })();
   return `→ ${ADAPTERS[name]}`;
 }
 
@@ -258,15 +287,17 @@ export function register(on, options) {
       description: `Голос: без имени — включить или выключить; с именем — сменить адаптер (${Object.keys(ADAPTERS).join(", ")})`,
       argumentHint: `[${Object.keys(ADAPTERS).join("|")}]`,
     });
-    $.clock.every(PING_MS, () => void post($, "/ping").catch(() => {})); // пока идёт пинг, сервис живёт
+    // Пока идёт пинг, сервис живёт; пингует только хозяин.
+    $.clock.every(PING_MS, () => void (running && mine($).then((my) => my && post($, "/ping")).catch(() => {})));
     const off = String(await $.fs.read(await stateFile($)).catch(() => "")).trim() === "off";
     if (off) $.ui.status("выкл");
     else void turnOn($, options);
     return result;
   });
 
-  // /gv — переключатель; /gv <адаптер> — другой адаптер.
+  // /gv — переключатель; /gv <адаптер> — другой адаптер. Голос ушёл в другую сессию — /gv здесь забирает его обратно.
   on("command.run", { command: "gv" }, async ($, e) => {
+    if (running && !(await mine($))) running = false;
     const name = e.args.trim().toLowerCase();
     if (name) return { text: name in ADAPTERS ? await choose($, options, name) : `нет «${name}»: ${Object.keys(ADAPTERS).join(" · ")}` };
     if (running) {
@@ -277,9 +308,9 @@ export function register(on, options) {
     return { text: `вкл · ${ADAPTERS[voiceOf(options)]}` };
   });
 
-  // Сессия закрылась — сервис уходит сразу, не ждёт потерянных пингов.
+  // Сессия закрылась — свой сервис уходит сразу, не ждёт потерянных пингов; чужой не трогаем.
   on("session.end", async ($, e, next) => {
-    await post($, "/quit").catch(() => {});
+    if (running && (await mine($))) await post($, "/quit").catch(() => {});
     return next(e);
   });
 
@@ -290,21 +321,25 @@ export function register(on, options) {
     return { sections: [...base.sections, { id: "gv:voice", scope: "session" as const, text }] };
   });
 
+  // Ход отправленного голосового сообщения — ход его запроса (узнаём по тексту: поле ввода могло поставить сообщение в очередь).
   // Ход без новой реплики сразу после голосового (продолжение или итог фоновой задачи, <task-notification>) — тот же запрос;
   // набранное руками обрывает цепочку.
   on("turn.start", async ($, e, next) => {
     if (e.agentId) return next(e);
     mainBusy = true;
-    const waiting = queued.get(e.text);
-    if (waiting) { // дошла очередь до сообщения, что ждало: теперь это голосовой ход, а UUID — из истории
-      queued.delete(e.text);
-      current = waiting;
-      const list = await bridge($, "list", {}).catch(() => null);
-      const uuid = list?.messages?.findLast((m: { text: string }) => m.text === e.text)?.uuid;
-      if (uuid) voiceMessages.set(waiting, uuid);
+    void turn($);
+    const id = expected.get(e.text) ?? (e.text.startsWith(MARK) ? expected.values().next().value : undefined);
+    if (id) {
+      for (const [text, v] of expected) if (v === id) expected.delete(text);
+      current = id;
+      if (!voiceMessages.has(id)) { // ушло очередью: UUID — из истории
+        void bridge($, "list", {}).then((list) => {
+          const uuid = list.messages?.findLast((m: { text: string }) => m.text === e.text)?.uuid;
+          if (uuid && !voiceMessages.has(id)) voiceMessages.set(id, uuid);
+        }).catch(() => {});
+      }
       return next(e);
     }
-    if (e.text.startsWith(MARK)) return next(e);
     const continued = e.text === "" || e.text.startsWith("<task-notification>");
     if (continued && !current && lastVoice) current = lastVoice;
     else if (!continued) lastVoice = 0;
@@ -324,15 +359,20 @@ export function register(on, options) {
         ...(open.includes(q.id) ? [h(Text, { dimColor: true }, `→ ${q.q}\n← ${q.a}`)] : []))));
   });
 
-  // Голосовой ход кончился — ответ сервису (пустой, если ответа нет: Claude всё равно свободен). Побочные ходы (агенты) не трогаем.
+  // Голосовой ход кончился — ответ сервису: текст; пустой — ход прерван или без текста (Claude всё равно свободен); ошибка — ход
+  // упал или Claude отказался. Затем, после любого хода, — что Claude свободен. Побочные ходы (агенты) не трогаем.
   on("turn.complete", async ($, e, next) => {
     if (e.agentId) return next(e);
     mainBusy = false;
-    if (!current) return next(e);
     const id = current;
     current = 0;
-    lastVoice = id;
-    await answer($, id, { text: e.reason === "answer" ? e.answer.trim() : "" });
+    if (id) {
+      lastVoice = id;
+      const failed = e.reason === "error" || e.reason === "refusal";
+      if (failed) $.ui.status(`✗ №${id}: ${failure(e)}`);
+      await answer($, id, failed ? { error: failure(e) } : { text: e.reason === "answer" ? e.answer.trim() : "" });
+    }
+    await turn($);
     return next(e);
   });
 }

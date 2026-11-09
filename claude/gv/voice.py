@@ -9,6 +9,7 @@
 Ручки (127.0.0.1:GV_PORT, по умолчанию 8790):
     POST /call   {"name", "args"} — единственный вход снаружи: ask, quick (как вызов Gemini; с "sure" — решение оркестратора),
                  utter {"text"} (законченная реплика на решение оркестратору), listen (речь вместо микрофона),
+                 turn {"working"} (начался или кончился ход Claude), rewound {"id", "removed"} (что стёр откат),
                  status, list, send, rewind (мост в окно Claude)
     GET  /next   плагин забирает запрос {"id", "kind": ask|quick, "text", "rewind"} или реплику на решение
                  {"kind": "route", "text", "busy", "recent"}; ждёт до ?wait= секунд, 204 — пока ничего
@@ -17,14 +18,19 @@
     POST /quit   сессия закрылась или пришла новая — выходим
     GET  /       страница с ходом разговора; websocket на том же адресе — поток событий
 
+Номера запросов живут, пока жив процесс: каждый ответ /next несёт заголовок X-GV-Epoch — номер запуска. Плагин шлёт его обратно
+с /call и /answer; чужой номер — 409: запрос относится к прошлому запуску, и его номер здесь значит другое.
+
 GV_TEXT_ONLY=1 — вместо адаптера Gemini без сокета, микрофона и колонок: ответы Claude — события say (тесты таймингов).
 """
 import asyncio
+import itertools
 import json
 import os
 import signal
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from aiohttp import web
@@ -39,6 +45,8 @@ VOICE = os.environ.get("GV_VOICE", "gemini")
 NEXT_WAIT = 25  # дольше /next не держим
 PING_LOST = 90
 BRIDGE = {"status", "list", "send", "rewind"}
+BRIDGE_LIMIT = 64 << 20  # ответ моста — одна строка JSON; список сообщений длинной сессии больше 64 КБ по умолчанию
+EPOCH = uuid.uuid4().hex[:12]  # номер этого запуска: перезапуск (и execv при правке кода) даёт новый
 S = {"ping": time.monotonic()}
 
 
@@ -47,21 +55,41 @@ async def bridge(name: str, args: dict) -> dict:
     path = os.environ.get("GV_NATIVE_SOCKET")
     if not path:
         return {"error": "мост не подключён: запустите Claude через ccg"}
-    reader, writer = await asyncio.open_unix_connection(path)
-    writer.write((json.dumps({"name": name, "args": args}) + "\n").encode())
-    await writer.drain()
-    line = await asyncio.wait_for(reader.readline(), 15)
-    writer.close()
-    return json.loads(line)
+    try:
+        reader, writer = await asyncio.open_unix_connection(path, limit=BRIDGE_LIMIT)
+        writer.write((json.dumps({"name": name, "args": args}) + "\n").encode())
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), 15)
+        writer.close()
+        return json.loads(line)
+    except (OSError, TimeoutError, ValueError) as ex:
+        return {"error": f"мост не ответил: {type(ex).__name__}: {ex}"}
+
+
+def foreign(request: web.Request) -> web.Response | None:
+    """Запрос о номерах прошлого запуска: здесь те же номера значат другие запросы."""
+    epoch = request.headers.get("X-GV-Epoch")
+    if epoch and epoch != EPOCH:
+        log("epoch.foreign", path=request.path, epoch=epoch)
+        return web.json_response({"error": "сервис перезапущен: номера запросов прежнего запуска здесь не действуют"}, status=409)
+    return None
 
 
 async def call(request: web.Request) -> web.Response:
+    if stale := foreign(request):
+        return stale
     body = await request.json()
     name, args = body.get("name", ""), body.get("args") or {}
     if name in ("ask", "quick"):
         result = core.call(name, args)
     elif name == "utter":
         core.utter(str(args.get("text") or ""))
+        result = "ok"
+    elif name == "turn":
+        core.claude(bool(args.get("working")))
+        result = "ok"
+    elif name == "rewound":
+        core.rewound(int(args.get("id") or 0), [int(i) for i in args.get("removed") or []])
         result = "ok"
     elif name == "listen":  # речь идёт в своём темпе, вызов возвращается сразу
         asyncio.create_task(voice.listen(args))
@@ -78,16 +106,18 @@ async def nxt(request: web.Request) -> web.Response:
     while not (item := core.next()):
         core.changed.clear()
         if (left := end - time.monotonic()) <= 0:
-            return web.Response(status=204)
+            return web.Response(status=204, headers={"X-GV-Epoch": EPOCH})
         try:
             await asyncio.wait_for(core.changed.wait(), left)
         except TimeoutError:
             pass
     log("next", id=item.get("id"), type=item["kind"], rewind=item.get("rewind"))
-    return web.json_response(item)
+    return web.json_response(item, headers={"X-GV-Epoch": EPOCH})
 
 
 async def answer(request: web.Request) -> web.Response:
+    if stale := foreign(request):
+        return stale
     body = await request.json()
     core.answer(int(request.query["id"]), str(body.get("text", "")).strip(), str(body.get("error", "")))
     return web.Response(text="ok")
@@ -171,22 +201,12 @@ async def claude_steps() -> None:
             await asyncio.sleep(5)
 
 
-async def start(_: web.Application) -> None:
-    global core, voice
-    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-        signal.signal(sig, lambda signum, _f: (log("exit", why=f"сигнал {signal.Signals(signum).name}"), os._exit(0)))
-    core = Core(say=lambda text: voice.say(text), emit=emit, log=log)
-    voice = adapters.make(VOICE, core)
-    log("start", port=PORT, voice=VOICE, adapter=voice.title, pause_ms=voice.pause_ms)
-    for c in (watchdog(), claude_steps(), *voice.start()):
-        asyncio.create_task(c)
-
-
 async def watchdog() -> None:
-    """Раз в секунду: очередь речи (ход Gemini мог зависнуть); раз в 10 с — пинг плагина и правка кода (перезапуск)."""
-    watched = [*HERE.glob("*.py"), *HERE.glob("adapters/*.py"), *HERE.glob("prompts/*.md"), HERE / "prompts/context.md", HERE / "page.html"]
-    stamp = {f: f.stat().st_mtime for f in watched if f.exists()}
-    for tick in iter(int, 1):
+    """Раз в секунду: очередь речи (ход Gemini мог зависнуть); раз в 10 с — пинг плагина и правка кода (перезапуск).
+    Промпты и страницу читают при каждом использовании — их правка перезапуска не требует."""
+    watched = [*HERE.glob("*.py"), *HERE.glob("adapters/*.py")]
+    stamp = {f: f.stat().st_mtime for f in watched}
+    for tick in itertools.count(1):
         await asyncio.sleep(1)
         core.pump()
         if tick % 10:
@@ -194,21 +214,35 @@ async def watchdog() -> None:
         if time.monotonic() - S["ping"] > PING_LOST:
             log("exit", why=f"плагин не пинговал {PING_LOST} с")
             os._exit(0)
-        if any(f.exists() and f.stat().st_mtime != stamp.get(f) for f in watched):
+        if any(not f.exists() or f.stat().st_mtime != stamp[f] for f in watched):
             log("reload")
             os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
-def main() -> None:
+async def main() -> None:
+    """Сначала порт, потом адаптер: второй запуск на занятом порту выходит, не открыв микрофон."""
+    global core, voice
     app = web.Application()
-    app.on_startup.append(start)
     app.add_routes([web.get("/", index), web.post("/call", call), web.get("/next", nxt), web.post("/answer", answer),
                     web.post("/ping", ping), web.post("/quit", quit_)])
-    web.run_app(app, host="127.0.0.1", port=PORT, print=None)
+    core = Core(say=lambda text: voice.say(text), emit=emit, log=log)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    try:
+        await web.TCPSite(runner, "127.0.0.1", PORT).start()
+    except OSError as ex:
+        log("exit", why=f"порт {PORT} занят: {ex}")
+        return
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, lambda signum, _f: (log("exit", why=f"сигнал {signal.Signals(signum).name}"), os._exit(0)))
+    voice = adapters.make(VOICE, core)
+    log("start", port=PORT, voice=VOICE, adapter=voice.title, pause_ms=voice.pause_ms, epoch=EPOCH)
+    tasks = [asyncio.create_task(c) for c in (watchdog(), claude_steps(), *voice.start())]  # noqa: F841 — держим ссылки
+    await asyncio.Event().wait()
 
 
 core: Core
 voice: adapters.Adapter
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
