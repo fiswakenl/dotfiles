@@ -42,8 +42,6 @@ ccg            # Claude с GV и мостом отката (функция в ~/
 - `hooks/orchestrator.ts` — промпт оркестратора и разбор его решения, без обращений к движку.
 - `preload.mjs` + `native/bridge.mjs` — мост в окно Claude: `status`, `list`, `send`, `rewind`. Сокет `$TMPDIR/gv-UID/PID.sock`, свой у каждого процесса.
 
-Схемы — `~/dotfiles/.excalidraw/` (путь запроса, выбор функции, очередь речи, два сценария).
-
 ## Снаружи
 
 Один вход — `POST /call {"name", "args"}`, имена те же, что у Gemini и моста:
