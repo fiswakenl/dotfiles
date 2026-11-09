@@ -37,6 +37,10 @@ def lane(e: dict) -> tuple[str, str] | None:
         return "конец реплики", text.split(": ", 1)[-1]
     if ev == "recognized":
         return "реплика", text
+    if ev == "route.early":
+        return "маршрут", f"рано: начало продолжения №{e.get('last')}? p={e.get('p')} по «{text}»"
+    if ev == "cut":
+        return "Claude", f"■ стоп №{e.get('id')}"
     if ev == "route":
         return "маршрут", f"продолжает №{e.get('last')}? p={e.get('p')}"
     if ev in ("ask", "quick"):
