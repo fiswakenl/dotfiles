@@ -14,6 +14,7 @@ from loguru import logger
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import InputAudioRawFrame, TranscriptionFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker
@@ -26,6 +27,10 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 from adapters import Adapter
+
+# Сколько тишины считать паузой, после которой Smart Turn решает, договорил ли человек. По умолчанию у Pipecat 0,2 с —
+# так Smart Turn спрашивают на каждом вдохе и он режет мысль на обрывки; на секунде он смотрит только настоящие паузы.
+VAD_STOP_SECS = 1.0
 from journal import emit, log
 
 RATE = 16000
@@ -50,7 +55,8 @@ class Recognizer(Adapter):
     async def run(self) -> None:
         pause = self.pause_ms / 1000
         turn = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=pause)))
-        pipeline = Pipeline([self.mic, VADProcessor(vad_analyzer=SileroVADAnalyzer()), self.stt(),
+        vad = SileroVADAnalyzer(params=VADParams(stop_secs=VAD_STOP_SECS))
+        pipeline = Pipeline([self.mic, VADProcessor(vad_analyzer=vad), self.stt(),
                              Utterances(self, UserTurnStrategies(stop=[turn]), stop_timeout=pause + 2)])
         worker = PipelineWorker(pipeline, idle_timeout_secs=None, enable_rtvi=False, enable_turn_tracking=False)
 
