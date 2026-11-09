@@ -4,7 +4,8 @@
 Правила:
 - ask — новая мысль; ask с replaces=N — дополнение или поправка N: в очереди — подмена, отправленный или отвеченный — откат до N и новый текст;
 - quick — быстрый вопрос по разговору: уходит сразу, даже пока Claude занят;
-- ответы звучат по одному в порядке готовности; следующий — только когда Gemini договорила и человек молчит;
+- ответы звучат по одному, когда Gemini договорила и человек молчит; из ждущих первым — ответ на последний заданный вопрос
+  (он свежее в голове; quick спрашивают позже основного — он и звучит первым); опоздавший quick всё равно звучит: это другая мысль;
 - ответ на заменённый запрос не звучит, даже если уже ждал в очереди речи.
 """
 import asyncio
@@ -35,7 +36,7 @@ class Core:
         self.ids = itertools.count(1)
         self.reqs: dict[int, Req] = {}
         self.busy: int | None = None  # ask, над которым сейчас работает Claude
-        self.speech: list[tuple[int, str]] = []  # (номер запроса, что сказать) — по порядку готовности
+        self.speech: list[tuple[int, str]] = []  # (номер запроса, что сказать) — ждут, пока голосовой канал свободен
         self.listening = False  # человек говорит
         self.turn: float | None = None  # ждём конца хода Gemini (с этого времени)
         self.alive = time.monotonic()  # последний признак жизни от Gemini
@@ -118,7 +119,7 @@ class Core:
         stale = self.turn is not None and time.monotonic() - max(self.turn, self.alive) > TURN_STALE_S
         if not self.speech or self.listening or (self.turn is not None and not stale):
             return
-        id, text = self.speech.pop(0)
+        id, text = self.speech.pop(max(range(len(self.speech)), key=lambda i: self.speech[i][0]))  # последний заданный вопрос
         self.turn = time.monotonic()
         self.emit({"say": id})
         asyncio.get_running_loop().create_task(self.say(text))

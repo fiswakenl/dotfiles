@@ -56,8 +56,9 @@ async def call(request: web.Request) -> web.Response:
     name, args = body.get("name", ""), body.get("args") or {}
     if name in ("ask", "quick"):
         result = core.call(name, args)
-    elif name == "listen":
-        result = await voice.listen(args)
+    elif name == "listen":  # речь идёт в своём темпе, вызов возвращается сразу
+        asyncio.create_task(voice.listen(args))
+        result = "ok"
     elif name in BRIDGE:
         result = await bridge(name, args)
     else:
