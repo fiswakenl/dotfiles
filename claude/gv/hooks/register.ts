@@ -185,7 +185,7 @@ async function turnOff($): Promise<void> {
   running = false;
   await $.fs.write(await stateFile($), "off").catch(() => {});
   await post($, "/quit").catch(() => {});
-  $.ui.status("выключен · /gv");
+  $.ui.status("выкл");
 }
 
 export function register(on, options) {
@@ -198,7 +198,7 @@ export function register(on, options) {
     await $.command.register({ name: "gv", description: "Включить или выключить голос (сервис Gemini и сокеты)" });
     $.clock.every(PING_MS, () => void post($, "/ping").catch(() => {})); // пока идёт пинг, сервис живёт
     const off = String(await $.fs.read(await stateFile($)).catch(() => "")).trim() === "off";
-    if (off) $.ui.status("выключен · /gv");
+    if (off) $.ui.status("выкл");
     else void turnOn($, options);
     return result;
   });
