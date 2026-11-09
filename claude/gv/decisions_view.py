@@ -132,6 +132,11 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 .lg i{position:relative;height:22px;font-style:normal}.lg u{text-decoration:none}.lg .bar{left:0;top:2px;width:42px}.lg .dot{left:21px;top:5px}
 .lg .wv{position:absolute;left:6px;top:7px;width:30px;height:8px;background:repeating-linear-gradient(90deg,#1d4ed8 0 2px,transparent 2px 4px)}
 .lg .ln{position:absolute;left:20px;top:0;height:22px;border-left:2px solid #dc2626}.lg .ln.old{border-left:2px dashed #9ca3af}
+#cur{position:absolute;top:22px;bottom:24px;width:0;border-left:1.5px solid #111;pointer-events:none;z-index:3;display:none}
+#now{margin:8px 0 0;padding:9px 12px;min-height:96px;border:1px solid #d1d5db;border-radius:6px;font-size:14.5px;display:grid;grid-template-columns:150px 1fr;gap:3px 10px;align-content:start}
+#now>b{font-weight:600;color:#555;text-align:right}#now .open{color:#6b7280;font-style:italic}#now .done{font-weight:600}#now .hint{grid-column:1/3;color:#6b7280}
+.tag{display:inline-block;font-size:12px;font-style:normal;font-weight:600;border-radius:4px;padding:0 6px;margin-left:6px;vertical-align:1px}
+.tag.o{background:#e0e7ff;color:#3730a3}.tag.c{background:#111;color:#fff}.tag.w{background:#f3f4f6;color:#6b7280}
 .or{color:#c2410c;font-weight:600}.red{color:#dc2626;font-weight:600}.gy{color:#6b7280}
 table{border-collapse:collapse;font-size:14.5px;width:100%}td,th{text-align:left;padding:3px 10px 3px 0;vertical-align:top;border-bottom:1px solid #f0f0f0}
 th{font-size:13px;color:#555;font-weight:600}td.n{white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -142,6 +147,7 @@ th{font-size:13px;color:#555;font-weight:600}td.n{white-space:nowrap;font-varian
 <h1>Когда срабатывает Decisions</h1>
 <p class="sub" id="sub"></p>
 <div id="tl"></div>
+<div id="now"></div>
 <div class="lg">
  <i><u class="bar ph"></u></i><span><b>Фраза</b>: одна реплика целиком, от первого слова до момента, когда она закрыта</span>
  <i><u class="bar no"></u></i><span><b>Вопрос к Decisions, ответ «нет»</b>: длина полосы — сколько думал, число рядом — вероятность «да»</span>
@@ -151,7 +157,7 @@ th{font-size:13px;color:#555;font-weight:600}td.n{white-space:nowrap;font-varian
  <i><u class="bar cl">№1</u></i><span><b>Claude работает</b> над запросом с этим номером</span>
  <i><u class="ck f" style="left:2px;top:3px">текст</u></i><span><b>Закрытый кусок текста</b>: слова окончательные</span>
  <i><u class="ln"></u></i><span><b>Стоп</b>: ход Claude остановлен ранним вопросом, фраза ещё звучит</span>
- <i></i><span class="gy">Наведи на любой элемент — покажет текст целиком</span>
+ <i><u class="ln" style="border-color:#111"></u></i><span><b>Курсор</b>: води мышкой по шкале — панель под ней покажет состояние на этот момент</span>
  <i><u class="ln old"></u></i><span><b>Откат</b>: здесь ход остановился бы без раннего вопроса</span>
 </div>
 <h2>Все вопросы к Decisions по порядку</h2>
@@ -216,7 +222,43 @@ function draw() {
     const old = D.asks.find(a => a.rewind === c.id);
     if (old) h += `<div class="v old" style="left:${150 + x(old.t)}px"></div><div class="vt old" style="left:${150 + x(old.t)}px">откат</div>`;
   }
-  tl.innerHTML = h;
+  tl.innerHTML = h + '<div id="cur"></div>';
+  SCALE = S;
+  tl.onmousemove = e => { const px = e.clientX - tl.getBoundingClientRect().left - 150; px >= 0 && px <= W ? at(T0 + px / S) : away(); };
+  tl.onmouseleave = away;
+  HOVER == null ? away() : at(HOVER);  // шкалу перерисовали (окно изменило размер) — курсор остаётся на своём моменте
+}
+
+// Состояние на момент t, как на паузе: что уже собрано из текста и закрыто ли оно, говорит ли человек, чем занят Claude.
+let SCALE = 1, HOVER = null;  // пикселей в секунде; момент под курсором
+function at(t) {
+  const cur = document.getElementById('cur');
+  HOVER = t;
+  cur.style.display = 'block';
+  cur.style.left = 150 + (t - T0) * SCALE + 'px';
+  const phrase = D.phrases.find(p => t >= p.a && t <= p.b), last = D.phrases.filter(p => p.b < t).pop();
+  const got = phrase ? D.chunks.filter(c => c.t >= phrase.a && c.t <= t) : [], tail = got[got.length - 1];
+  const done = got.filter(c => c.final).map(c => c.text).join(' '), open = tail && !tail.final ? tail.text : '';
+  const text = phrase
+    ? (done || open ? `<span class="done">${esc(done)}</span> <span class="open">${esc(open)}</span>` +
+        (open ? '<span class="tag o">открыто: слова ещё могут поменяться</span>' : '<span class="tag c">коммит: слова окончательные</span>')
+      : '<span class="gy">речь идёт, текста от Deepgram ещё нет</span>')
+    : last ? `<span class="done">${esc(last.text)}</span><span class="tag w">фраза закрыта ${num(t - last.b, 1)} с назад</span>` : '<span class="gy">ещё ничего не сказано</span>';
+  const speaking = D.speech.some(([a, b]) => t >= a && t <= b), quiet = D.speech.filter(s => s[1] < t).pop();
+  const ask = D.asks.filter(a => a.t <= t).pop(), cut = ask && D.cuts.find(c => c.id === ask.id && c.t <= t);
+  const call = D.decisions.filter(c => c.t <= t).pop(), going = D.decisions.find(c => c.t - c.d <= t && c.t > t);
+  document.getElementById('now').innerHTML =
+    `<b>Момент</b><span>${clock(t, true)}, ${num(t - T0, 1)} с от начала отрезка</span>` +
+    `<b>Собрано</b><span>${text}</span>` +
+    `<b>Ты</b><span>${speaking ? 'говоришь' : quiet ? `молчишь ${num(t - quiet[1], 1)} с` : 'молчишь'}</span>` +
+    `<b>Claude</b><span>${!ask ? 'свободен' : cut ? `остановлен на запросе №${ask.id}, ждёт конца фразы` : `работает над запросом №${ask.id}`}</span>` +
+    `<b>Decisions</b><span>${going ? `думает: ${NAME[going.kind]}, «${esc(going.text)}»` : call ? `последний ответ: ${NAME[call.kind]} ${num(call.p)}, ${outcome(call)}` : 'вопросов ещё не было'}</span>`;
+}
+
+function away() {
+  HOVER = null;
+  document.getElementById('cur').style.display = 'none';
+  document.getElementById('now').innerHTML = '<span class="hint">Води мышкой по шкале: здесь будет состояние на этот момент — какой текст уже собран, открыт он или закрыт, что делает Claude.</span>';
 }
 
 document.getElementById('sub').textContent = `Отрезок ${clock(D.from)}–${clock(D.to)}, ${Math.round(LEN)} с. ` +
@@ -255,7 +297,7 @@ def main() -> None:
     data = collect(rows, *span(rows, *(args[1:3] + [None, None])[:2]))
     data["level"] = level(rows, TRACES / f"{name}.wav", data["from"], data["to"])
     command = f"uv run --script ~/.claude/gv/decisions_view.py {name} {clock(data['from'])} {clock(data['to'])}" + (f' -o "{out}"' if out else "")
-    height = 760 + 46 * len(data["decisions"]) + 140 * len(data["cuts"])  # рамка в Excalidraw: строки таблицы бывают в две строки
+    height = 880 + 46 * len(data["decisions"]) + 140 * len(data["cuts"])  # рамка в Excalidraw: строки таблицы бывают в две строки
     page = (PAGE.replace("__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/")).replace("__NAME__", name)
             .replace("__COMMAND__", command).replace("__HEIGHT__", str(height)))
     target = out or TRACES / f"{name}.decisions.html"
