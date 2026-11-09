@@ -149,17 +149,18 @@ details{margin:.6rem 0;color:#444}pre{white-space:pre-wrap;font:inherit;backgrou
 <div id=st>жду сессию Claude…</div>
 <details><summary>Инструкция и функции Gemini</summary><pre id=prompt></pre></details><div id=log></div>
 <script>
-const log=document.getElementById('log'),st=document.getElementById('st'),texts={};let cur={};
+const log=document.getElementById('log'),st=document.getElementById('st'),kinds={};let cur={};
+const who=id=>kinds[id]==='quick'?'quick №'+id+' (ветка Claude, мимо чата)':'ask №'+id+' (Claude, в чат)';
 function line(k,pre,t){let d=cur[k];if(!d||!d.isConnected){d=document.createElement('div');d.className=k;d.textContent=pre;log.append(d)}
  cur={};cur[k]=d;d.textContent+=t;scrollTo(0,document.body.scrollHeight)}
 function add(k,t){cur={};const d=document.createElement('div');d.className=k;d.textContent=t;log.append(d);scrollTo(0,document.body.scrollHeight)}
 const handle=m=>{
  if(m.history){log.innerHTML='';cur={};m.history.forEach(handle);
   document.getElementById('prompt').textContent=m.prompt+'\\n\\n— Функции —\\n'+m.tools.map(t=>t.name+': '+t.description).join('\\n');return}
- if(m.me)line('me','Вы: ',m.me);if(m.ai)line('ai','Gemini: ',m.ai);
- if(m.ask){texts[m.id]=m.ask;add('ask',(m.kind==='quick'?'⚡ №':'→ Claude №')+m.id+(m.rewind?' (откат до №'+m.rewind+')':'')+': '+m.ask)}
- if(m.answer)add('ask','← №'+m.id+': '+m.answer);if(m.superseded)add('state','· №'+m.superseded+' заменён');
- if(m.say)add('state','· Gemini читает ответ №'+m.say);if(m.dropped)add('state','· ответ на №'+m.dropped+' отброшен');
+ if(m.me)line('me','Вы: ',m.me);if(m.ai)line('ai','Gemini читает вслух: ',m.ai);
+ if(m.ask){kinds[m.id]=m.kind;add('ask','→ '+who(m.id)+(m.rewind?', откат до №'+m.rewind:'')+': '+m.ask)}
+ if(m.answer)add('ask','← ответил '+who(m.id)+': '+m.answer);if(m.superseded)add('state','· №'+m.superseded+' заменён');
+ if(m.say)add('state','· Gemini читает ответ '+who(m.say));if(m.dropped)add('state','· ответ на №'+m.dropped+' отброшен');
  if(m.error)add('err',m.error);if(m.state)add('state','· '+m.state)};
 function connect(){
  const ws=new WebSocket('ws://'+location.host+'/');
