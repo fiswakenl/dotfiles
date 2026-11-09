@@ -143,7 +143,10 @@ async function deliver($, r: { id: number; text: string; rewind: number | null }
   // Новое сообщение — только в свободное окно: посреди чужого хода поле ввода его теряет. Поправка откатывает ход сама.
   while (mainBusy && !target) await sleep(300);
   current = 0; // завершение отменяемого хода не выдаём за ответ
-  const result = await bridge($, target ? "rewind" : "send", target ? { target, text } : { text });
+  // Сообщение, которое поправляем, уже убрано из истории (откат руками) — поправлять нечего: реплика уходит новой.
+  const result = target
+    ? await bridge($, "rewind", { target, text }).catch((err) => (/target_not_found/.test(String(err)) ? bridge($, "send", { text }) : Promise.reject(err)))
+    : await bridge($, "send", { text });
   for (const [id, uuid] of voiceMessages) if (result.removed?.includes(uuid)) voiceMessages.delete(id);
   if (result.queued) return void queued.set(text, r.id); // Claude занят: узнаем запрос, когда начнётся его ход
   voiceMessages.set(r.id, result.uuid);
