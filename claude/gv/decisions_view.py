@@ -44,8 +44,8 @@ def seconds(hms: str) -> int:
 def span(rows: list[dict], start: str | None, end: str | None) -> tuple[float, float]:
     """Отрезок записи: с первого события не раньше start до end; без них — TAIL_S секунд до последнего запроса."""
     if start:
-        a = next(r["ts"] for r in rows if clock(r["ts"]) >= start)
-        a -= a % 1
+        a = next(r["ts"] for r in rows if clock(r["ts"]) >= start)  # ближайшее событие — а начало ровно в start, даже если до него тихо
+        a -= a % 1 + (seconds(clock(a)) - seconds(start)) % 86400
         return a, a + ((seconds(end) - seconds(start)) % 86400 if end else TAIL_S)
     last = next((r["ts"] for r in reversed(rows) if r["ev"] in ("ask", "quick")), rows[-1]["ts"])
     return last - TAIL_S, last + 1.5
