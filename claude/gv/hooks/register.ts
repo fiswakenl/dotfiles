@@ -91,7 +91,7 @@ async function launch($, options): Promise<boolean> {
     if (!(await $.http.fetch(`${BASE}/`).catch(() => null))) break;
     await sleep(250);
   }
-  const env = [`GV_PORT=${PORT}`, `GV_DUPLEX=${options.duplex === "off" ? "0" : "1"}`, `GV_PAUSE_MS=${String(options.pause ?? "2500")}`];
+  const env = [`GV_PORT=${PORT}`, `GV_DUPLEX=${options.duplex ?? "auto"}`, `GV_PAUSE_MS=${String(options.pause ?? "2500")}`];
   const pass = {
     GV_NATIVE_SOCKET: await $.env.get("GV_NATIVE_SOCKET"),
     GV_TEXT_ONLY: await $.env.get("GV_TEXT_ONLY"),
