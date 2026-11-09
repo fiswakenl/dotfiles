@@ -17,7 +17,8 @@ STATE = {"queued": "ждёт отправки", "sent": "Claude работает
 
 INSTRUCTIONS = ("Человек говорит с Claude голосом; речь распознана в текст и нарезана по паузам. "
                 "Новая реплика — продолжение переданной, если без неё непонятна, обрывает или поправляет её; "
-                "законченная мысль, понятная сама по себе, — новая, даже на ту же тему.")
+                "законченная мысль, понятная сама по себе, — новая, даже на ту же тему. "
+                "Короткая реплика через секунду-две после переданной — скорее её продолжение: человек договаривал после паузы.")
 
 
 @dataclass
@@ -28,7 +29,7 @@ class Decision:
 
 def question(text: str, recent: list, now: float) -> tuple[str, dict[str, ChoiceQuestion]]:
     """Что спросить: переданные реплики и новая — текстом, варианты — новая мысль или продолжение каждой из переданных."""
-    lines = [f"№{r.id} ({STATE.get(r.state, r.state)}, {now - r.at:.0f} с назад): {r.text}" for r in recent]
+    lines = [f"№{r.id} ({STATE.get(r.state, r.state)}, {now - r.at:.1f} с назад): {r.text}" for r in recent]
     state = "\n".join(["Переданные реплики:", *lines, "", f"Новая реплика: {text}"])
     options = {"new": "новая мысль", **{f"continue_{r.id}": f"продолжение или поправка №{r.id}" for r in recent}}
     return state, {"route": ChoiceQuestion(instructions=INSTRUCTIONS, options=options)}
