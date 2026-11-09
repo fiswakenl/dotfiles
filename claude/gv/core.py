@@ -29,6 +29,7 @@ class Req:
     text: str
     rewind: int | None = None  # номер запроса, до которого откатить историю Claude перед отправкой
     state: str = "queued"  # queued → sent → answered; superseded — заменён поправкой; failed — не дошёл
+    by: int | None = None  # чем заменён
     at: float = field(default_factory=time.monotonic)
 
 
@@ -56,13 +57,15 @@ class Core:
             self.log("ask.duplicate", id=dup.id)
             return f"Запрос №{dup.id} уже передан. Молчи."
         old = self.reqs.get(int(args.get("replaces") or 0)) or self._just_asked()
-        if old and (old.kind != "ask" or old.state in ("superseded", "failed")):
+        while old and old.by:  # Gemini поправила уже заменённый — значит, его свежую замену
+            old = self.reqs[old.by]
+        if old and (old.kind != "ask" or old.state == "failed"):
             old = None
         # Поправка ещё не отправленного запроса наследует его откат: история Claude та же, что ждала его.
         rewind = None if not old else old.rewind if old.state == "queued" else old.id
-        if old:
-            self._supersede(old)
         r = self._add("ask", text, rewind)
+        if old:
+            self._supersede(old, r.id)
         note = f" Прежний №{old.id} заменён." if old else ""
         return f"Запрос №{r.id} передан.{note} Молчи. Если человек дополнит или поправит его, вызови ask с replaces={r.id} и полным текстом."
 
@@ -76,7 +79,7 @@ class Core:
                     if r.rewind:  # откат стирает из истории всё после цели: те ходы больше не ответят
                         for o in self.reqs.values():
                             if o.kind == "ask" and o.id > r.rewind and o.id != r.id and o.state in ("sent", "answered"):
-                                self._supersede(o)
+                                self._supersede(o, r.id)
                     self.busy = r.id
                 self.emit({"sent": r.id})
                 return {"id": r.id, "kind": r.kind, "text": r.text, "rewind": r.rewind}
@@ -139,8 +142,8 @@ class Core:
         self.changed.set()
         return r
 
-    def _supersede(self, r: Req) -> None:
-        r.state = "superseded"
+    def _supersede(self, r: Req, by: int) -> None:
+        r.state, r.by = "superseded", by
         if self.busy == r.id:
             self.busy = None
         self.speech = [s for s in self.speech if s[0] != r.id]
