@@ -116,7 +116,7 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
     return d
 
 
-PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x570">
+PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x600">
 <title>gv · decisions · __NAME__</title>
 <!-- обновить или взять другой отрезок: __COMMAND__ -->
 <style>
@@ -138,29 +138,21 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 #axis{position:relative;height:22px;margin-left:var(--l);border-top:1px solid #9ca3af}
 #axis i{position:absolute;top:0;height:5px;border-left:1px solid #9ca3af}#axis span{position:absolute;top:5px;transform:translateX(-50%);white-space:nowrap}
 #cur{position:absolute;top:0;bottom:22px;width:0;border-left:1.5px solid #111;pointer-events:none;z-index:3}
-#now{margin-top:10px;display:grid;grid-template-columns:var(--l) 1fr;gap:3px 0;align-items:baseline}
-#now>b{font-weight:400;text-align:right;padding-right:12px}#now>.text{font-size:17px;min-height:25px}
+#now{margin-top:12px;display:grid;grid-template-columns:var(--l) 1fr 340px;align-items:baseline}
+#now>*{padding:4px 0;border-top:1px solid #f3f4f6}#now>.hd{border:0;padding:0 0 2px;font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:#9ca3af;text-transform:uppercase;letter-spacing:.04em}
+#now>b{font-weight:400;text-align:right;padding-right:12px}#now>.text{font-size:17px;min-height:33px}#now>.lgc{padding-left:16px;border-left:1px solid #f3f4f6;align-self:stretch}
 .open{background:#bfdbfe;border-radius:2px;padding:1px 2px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
-.lg{display:flex;flex-wrap:wrap;gap:4px 22px;margin:14px 0 0 var(--l);padding-top:10px;border-top:1px solid #f3f4f6;font-size:12.5px;color:#6b7280}
-.lg span{display:flex;align-items:center;gap:7px}.lg i{position:relative;width:38px;height:22px;flex:none;font-style:normal}.lg u{text-decoration:none}
-.lg .bar{left:0;top:2px}.lg .rh{top:5px;margin-left:0}.lg .ln{position:absolute;top:0;height:22px;border-left:2px solid #dc2626}.lg .ln.old{border-left:2px dashed #9ca3af}
-.lg .wv{position:absolute;left:2px;top:7px;width:34px;height:8px;background:repeating-linear-gradient(90deg,#1d4ed8 0 2px,#dbeafe 2px 4px)}
-.dim{color:#9ca3af}.key{font-weight:600}.red{color:#dc2626;font-weight:600}.past{color:#6b7280}#now>b:first-child{color:#111}
+.lgc{display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;font-size:12.5px;color:#6b7280;line-height:22px}
+.lgc span{display:inline-flex;align-items:center;gap:6px}.lgc i{position:relative;width:34px;height:22px;flex:none;font-style:normal}.lgc u{text-decoration:none}
+.lgc .bar{left:0;top:2px}.lgc .rh{top:5px;margin-left:0}.lgc .tk{top:3px}.lgc .tk.f{top:0}.lgc .fz{top:5px}
+.lgc .ln{position:absolute;top:0;height:22px;border-left:2px solid #dc2626}.lgc .ln.old{border-left:2px dashed #9ca3af}
+.lgc .wv{position:absolute;left:0;top:7px;width:34px;height:8px;background:repeating-linear-gradient(90deg,#1d4ed8 0 2px,#dbeafe 2px 4px)}
+.dim{color:#9ca3af}.key{font-weight:600}.red{color:#dc2626;font-weight:600}.past{color:#6b7280}#now>b.t0{color:#111}
 </style>
 <div class="w">
 <div class="mono" id="head"></div>
 <div id="tl"></div>
 <div id="now"></div>
-<div class="lg">
- <span><i><u class="wv"></u></i>громкость; фон — Silero слышит голос</span>
- <span><i><u class="rh" style="left:6px"></u><u class="rh y" style="left:24px"></u></i>smart turn: не договорил · договорил</span>
- <span><i><u class="tk" style="left:10px;top:3px"></u><u class="tk f" style="left:22px;top:0"></u></i>кусок текста: открытый · закрытый</span>
- <span><i><u class="fz" style="left:18px;top:5px">▼</u></i>наше «верни» в Deepgram: шлём на каждую паузу по Silero</span>
- <span><i><u class="bar no" style="width:16px"></u><u class="bar yes" style="left:20px;width:16px"></u></i>вопрос к Decisions: нет · да; длина — сколько думал, число — вероятность</span>
- <span><i><u class="bar cl" style="width:36px">№1</u></i>Claude работает над запросом</span>
- <span><i><u class="ln" style="left:10px"></u><u class="ln old" style="left:24px"></u></i>стоп · откат, который был бы без него</span>
- <span><i><u class="open" style="position:absolute;left:0;top:2px;font-size:12px">текст</u></i>в строке под шкалой: ещё открыт</span>
-</div>
 </div>
 <script type="application/json" id="data">__DATA__</script>
 <script>
@@ -175,6 +167,17 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', 
 const outcome = c => c.kind === 'early' ? (c.yes ? `стоп №${c.last}` : 'ждём следующий кусок')
   : c.kind === 'done' ? (c.yes ? 'фраза закрыта' : 'ждём продолжения')
   : (c.yes ? `продолжение №${c.last}: откат и склейка` : 'новая мысль');
+const item = (glyph, text) => `<span><i>${glyph}</i>${text}</span>`, cell = (...items) => `<span class="lgc">${items.join('')}</span>`;
+const LEGEND = {
+  text: cell(item('<u class="open" style="position:absolute;top:0;font-size:12px">текст</u>', 'ещё открыт, может поменяться')),
+  you: cell(item('<u class="wv"></u>', 'громкость, фон — Silero слышит голос'),
+            item('<u class="rh" style="left:4px"></u><u class="rh y" style="left:20px"></u>', 'smart turn: нет · договорил')),
+  deepgram: cell(item('<u class="tk" style="left:10px"></u><u class="tk f" style="left:22px"></u>', 'кусок: открытый · закрытый'),
+                 item('<u class="fz" style="left:16px">▼</u>', 'наше «верни» по паузе')),
+  decisions: cell(item('<u class="bar no" style="width:14px"></u><u class="bar yes" style="left:18px;width:14px"></u>', 'нет · да; длина — сколько думал')),
+  claude: cell(item('<u class="bar cl" style="width:32px">№1</u>', 'работает над запросом'),
+               item('<u class="ln" style="left:8px"></u><u class="ln old" style="left:22px"></u>', 'стоп · где был бы откат')),
+};
 let SCALE = 1;  // пикселей в секунде
 let NOW = D.cuts[0]?.t ?? D.chunks[0]?.t ?? D.from;  // момент под курсором; сначала — первый стоп
 
@@ -231,14 +234,14 @@ function at(t) {
   const call = D.decisions.filter(c => c.t <= t).pop(), going = D.decisions.find(c => c.t - c.d <= t && c.t > t), q = going ?? call;
   // В каждой строке главное — в полную силу, подробности — приглушённо, решающее число — жирным.
   const none = '<span class="dim">—</span>';
-  document.getElementById('now').innerHTML =
-    `<b>${clock(t, true)}</b><span class="text">${text || none}</span>` +
+  document.getElementById('now').innerHTML = '<span class="hd"></span><span class="hd">под курсором</span><span class="hd lgc">обозначения</span>' +
+    `<b class="t0">${clock(t, true)}</b><span class="text">${text || none}</span>${LEGEND.text}` +
     `<b>ты</b><span>${speaking ? 'говоришь' : quiet ? `молчишь ${num(t - quiet[1], 1)} с` : 'молчишь'}` +
-      (turn ? dim(` · smart turn ${num(t - turn.t, 1)} с назад: `) + (turn.yes ? 'договорил' : 'не договорил') : '') + '</span>' +
-    `<b>deepgram</b><span>${source(t)}</span>` +
-    `<b>claude</b><span>${!ask ? none : cut ? `№${ask.id} <span class="key">остановлен</span>${stopped(cut)}` : `№${ask.id} работает`}</span>` +
+      (turn ? dim(` · smart turn ${num(t - turn.t, 1)} с назад: `) + (turn.yes ? 'договорил' : 'не договорил') : '') + `</span>${LEGEND.you}` +
+    `<b>deepgram</b><span>${source(t)}</span>${LEGEND.deepgram}` +
     `<b>decisions</b><span>${!q ? none : `${NAME[q.kind]} ` + dim(`«${ASK[q.kind]}» по «${esc(q.text)}»` + (q.pause != null ? `, пауза ${num(q.pause, 1)} с` : '')) +
-      (going ? dim(' · думает') : ` → <span class="key">${num(q.p)}</span> ` + dim(`за ${num(q.d)} с ·`) + ` <span class="${q.yes ? 'key' : ''}">${outcome(q)}</span>`)}</span>`;
+      (going ? dim(' · думает') : ` → <span class="key">${num(q.p)}</span> ` + dim(`за ${num(q.d)} с ·`) + ` <span class="${q.yes ? 'key' : ''}">${outcome(q)}</span>`)}</span>${LEGEND.decisions}` +
+    `<b>claude</b><span>${!ask ? none : cut ? `№${ask.id} <span class="key">остановлен</span>${stopped(cut)}` : `№${ask.id} работает`}</span>${LEGEND.claude}`;
 }
 
 // Откуда последний кусок текста: открыт; закрыт нашим «верни» (и кто его послал); закрыт самим Deepgram — по его паузе или без неё.
