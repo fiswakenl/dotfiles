@@ -1,5 +1,6 @@
 // Мост в окно Claude: Unix-сокет, строка JSON {name, args} → строка JSON с результатом.
-// Имена те же, что у /call в voice.py: status, list, send {text}, rewind {target, text?}.
+// Имена те же, что у /call в voice.py: status, list, send {text}, rewind {target, text?}, cancel.
+// cancel — остановить идущий ход, как Esc: история остаётся, сообщение не стирается.
 // target — номер сообщения пользователя с начала ветки (1, 2…) или его UUID; text — сразу отправить после отката.
 import net from 'node:net';
 import fs from 'node:fs';
@@ -71,6 +72,7 @@ async function dispatch({name, args = {}}) {
  if (name === 'list') return {messages:users().map(m=>({uuid:m.uuid, text:textOf(m)}))};
  if (name === 'send') return send(args.text);
  if (name === 'rewind') return rewind(args);
+ if (name === 'cancel') { await controller.turn.cancel(); return {cancelled:true}; }
  return {error:`unknown_name: ${name}`};
 }
 

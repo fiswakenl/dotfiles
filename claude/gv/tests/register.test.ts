@@ -128,3 +128,22 @@ test("голос забрала другая сессия → прежняя н�
   await $.session.end({ reason: "other", sessionId: "s", resume: { id: "s" } });
   expect(w.svc.sent.filter((s) => s.path === "/quit")).toEqual([]);
 });
+
+test("человек заговорил, и это продолжение → останавливается ход этого запроса, чужой ход не трогаем", { timeoutMs: 10_000 }, async ($, on) => {
+  const w = world(on);
+  await startSession($);
+  await w.until(() => w.svc.sent.some((s) => s.path.startsWith("/next")));
+  w.svc.next.push({ id: 1, kind: "ask", text: "привет", rewind: null });
+  await w.until(() => w.calls("send").length);
+  w.svc.next.push({ kind: "cancel", id: 1 }); // ход запроса ещё не начался: останавливать нечего
+  await wait(100);
+  expect(w.calls("cancel").length).toBe(0);
+  await $.turn.start({ text: "🎙 привет", turnId: "t1" });
+  w.svc.next.push({ kind: "cancel", id: 7 }); // идёт ход другого запроса
+  await wait(100);
+  expect(w.calls("cancel").length).toBe(0);
+  w.svc.next.push({ kind: "cancel", id: 1 });
+  await w.until(() => w.calls("cancel").length);
+  expect(w.calls("cancel").length).toBe(1);
+  await stop($);
+});

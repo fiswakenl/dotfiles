@@ -74,6 +74,11 @@ class Sim:
             if r["kind"] == "quick":
                 asyncio.create_task(self.reply(r["id"], QUICK_S))
                 continue
+            if r["kind"] == "cancel":  # как плагин: ход остановлен, Claude свободен — ответ пустой
+                if self.turn:
+                    self.turn.cancel()
+                self.core.answer(r["id"])
+                continue
             if "СБОЙ" in r["text"]:
                 self.core.answer(r["id"], error="мост не ответил")
                 continue
@@ -102,6 +107,10 @@ class Sim:
             return "ok"
         if name == "rewind":
             return self.rewind(args["target"])
+        if name == "cut":
+            return self.core.interrupt(args["replaces"])
+        if name == "silence":
+            return self.core.resume()
         if name == "typed":  # человек набрал сообщение руками: ход Claude идёт args.seconds секунд
             self.core.claude(True)
             asyncio.get_running_loop().call_later(args["seconds"], self.core.claude, False)

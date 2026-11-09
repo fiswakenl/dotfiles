@@ -10,9 +10,9 @@
     POST /call   {"name", "args"} — единственный вход снаружи: ask, quick (как вызов Gemini; с "sure" — решение оркестратора),
                  utter {"text"} (законченная реплика на решение оркестратору), listen (речь вместо микрофона),
                  turn {"working"} (начался или кончился ход Claude), rewound {"id", "removed"} (что стёр откат),
-                 status, list, send, rewind (мост в окно Claude)
-    GET  /next   плагин забирает запрос {"id", "kind": ask|quick, "text", "rewind"} или реплику на решение
-                 {"kind": "route", "text", "busy", "recent"}; ждёт до ?wait= секунд, 204 — пока ничего
+                 status, list, send, rewind, cancel (мост в окно Claude)
+    GET  /next   плагин забирает запрос {"id", "kind": ask|quick, "text", "rewind"}, остановку хода {"kind": "cancel", "id"}
+                 или реплику на решение {"kind": "route", "text", "busy", "recent"}; ждёт до ?wait= секунд, 204 — пока ничего
     POST /answer ?id=N, {"text"} или {"error"} — ответ на запрос; ask освобождает Claude
     POST /ping   плагин жив; пропал на PING_LOST секунд — сервис выходит сам
     POST /quit   сессия закрылась или пришла новая — выходим
@@ -44,7 +44,7 @@ PORT = int(os.environ.get("GV_PORT", 8790))
 VOICE = os.environ.get("GV_VOICE", "gemini")
 NEXT_WAIT = 25  # дольше /next не держим
 PING_LOST = 90
-BRIDGE = {"status", "list", "send", "rewind"}
+BRIDGE = {"status", "list", "send", "rewind", "cancel"}
 BRIDGE_LIMIT = 64 << 20  # ответ моста — одна строка JSON; список сообщений длинной сессии больше 64 КБ по умолчанию
 EPOCH = uuid.uuid4().hex[:12]  # номер этого запуска: перезапуск (и execv при правке кода) даёт новый
 S = {"ping": time.monotonic()}

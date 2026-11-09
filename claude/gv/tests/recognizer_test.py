@@ -4,7 +4,7 @@
 # ///
 """Конвейер адаптеров распознавания (adapters/recognizer.py) на настоящих Silero VAD и Smart Turn, без сети и микрофона:
 речь синтезирует macOS (say), вместо сервиса распознавания — ненастоящий: на каждый отрезок речи по VAD отвечает «отрезок N».
-Проверяется, сколько реплик дошло до ядра. Запуск: uv run --script tests/recognizer_test.py"""
+Проверяется, сколько реплик дошло до ядра и что ход Claude останавливается на первых словах, а не в конце фразы. Запуск: uv run --script tests/recognizer_test.py"""
 import asyncio
 import logging
 import subprocess
@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import journal  # noqa: E402
 
 journal.TRACES = Path(tempfile.mkdtemp())  # запись запуска теста — во временную папку, не к живым
-from pipecat.classifiers.base_classifier import BaseClassifier, ChoiceResult  # noqa: E402
+from pipecat.classifiers.base_classifier import BaseClassifier, ChoiceResult, YesNoQuestion, YesNoResult  # noqa: E402
 from pipecat.frames.frames import TranscriptionFrame  # noqa: E402
 from pipecat.services.settings import STTSettings  # noqa: E402
 from pipecat.services.stt_service import SegmentedSTTService  # noqa: E402
@@ -57,10 +57,11 @@ class Segments(SegmentedSTTService):
 
 
 class Complete(BaseClassifier):
-    """Классификатор без сети: любая реплика законченна — конец решает один Smart Turn."""
+    """Классификатор без сети: любая реплика законченна — конец решает один Smart Turn; на вопрос да-нет — «да»."""
 
     async def _ask(self, state, questions, images=()):
-        return {name: ChoiceResult(choice="complete", probabilities={"complete": 1.0}, confidence=1.0) for name in questions}, None
+        return {name: YesNoResult(probability=1.0) if isinstance(q, YesNoQuestion)
+                else ChoiceResult(choice="complete", probabilities={"complete": 1.0}, confidence=1.0) for name, q in questions.items()}, None
 
 
 class Fake(Recognizer):
@@ -73,9 +74,16 @@ class Fake(Recognizer):
         return Complete()
 
 
+class Req:
+    id, kind, state, text, at = 1, "ask", "sent", "Расскажи, что такое регуляризация.", 0.0
+
+
 class Core:
     def __init__(self) -> None:
         self.utterances: list[str] = []
+        self.events: list[str] = []  # что и в каком порядке дошло до ядра
+        self.working: Req | None = None  # запрос, над которым «работает» Claude
+        self.cut = None
 
     def recent(self, n: int = 6) -> list:
         return []  # прошлых запросов нет: маршрут — новая мысль без вызова классификатора
@@ -83,8 +91,19 @@ class Core:
     def claude_busy(self) -> bool:
         return False
 
+    def working_on(self) -> Req | None:
+        return self.working
+
+    def interrupt(self, id: int) -> bool:
+        self.events.append(f"cut {id}")
+        self.working = None
+        return True
+
+    def resume(self, keep=None) -> None: ...
+
     def call(self, name: str, args: dict) -> str:
         self.utterances.append(args["heard"])
+        self.events.append("call")
         return ""
 
 
@@ -113,7 +132,7 @@ class Pipeline(unittest.IsolatedAsyncioTestCase):
         """Один конвейер на все случаи: Silero и Smart Turn грузятся один раз."""
         recognizer.sd.RawInputStream = NoMic
         recognizer.emit = lambda e: None
-        recognizer.log = lambda *a, **k: None
+        recognizer.log = recognizer.router.log = lambda *a, **k: None
         core = Core()
         adapter = Fake(core)
         adapter.pause_ms = PAUSE_MS
@@ -125,6 +144,11 @@ class Pipeline(unittest.IsolatedAsyncioTestCase):
                     core.utterances.clear()
                     await adapter.mic.play(audio() + silence(PAUSE_MS / 1000 + 1.5))
                     self.assertEqual(len(core.utterances), count, core.utterances)
+            with self.subTest("заговорил, пока Claude работает, — ход остановлен один раз и раньше конца фразы"):
+                core.events.clear()
+                core.working = Req()
+                await adapter.mic.play(speech("И ещё расскажи про обучение.") + silence(PAUSE_MS / 1000 + 1.5))
+                self.assertEqual(core.events, ["cut 1", "call"])
         finally:
             run.cancel()
             await asyncio.gather(run, return_exceptions=True)

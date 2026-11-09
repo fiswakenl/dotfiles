@@ -17,7 +17,8 @@ from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnal
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.classifiers.base_classifier import BaseClassifier
 from pipecat.classifiers.openai.decisions.classifier import OpenAIDecisionsClassifier
-from pipecat.frames.frames import InputAudioRawFrame, TranscriptionFrame
+from pipecat.frames.frames import (InputAudioRawFrame, InterimTranscriptionFrame, TranscriptionFrame, VADUserStartedSpeakingFrame,
+                                   VADUserStoppedSpeakingFrame)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.audio.vad_processor import VADProcessor
@@ -91,6 +92,9 @@ class Recognizer(Adapter):
         self.decisions = self.classifier()  # один на конец реплики и на маршрут: одно тёплое соединение
         self.order = asyncio.Lock()
         self.delivering: set[asyncio.Task] = set()
+        self.partial = self.asked = ""  # что уже слышно в идущей фразе; по какому её началу уже спросили классификатор
+        self.settled = False  # ход Claude этой фразой уже остановлен
+        self.checking: asyncio.Task | None = None
         pause = self.pause_ms / 1000
         turn = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=pause)))
         pipeline = Pipeline([self.mic, VADProcessor(vad_analyzer=SileroVADAnalyzer()), self.stt(),
@@ -109,21 +113,39 @@ class Recognizer(Adapter):
         await runner.run()
         self.error("конвейер распознавания остановился")
 
-    def heard(self, text: str) -> None:
+    def hearing(self, text: str, pause: float | None) -> None:
+        """Фраза ещё звучит, text — всё, что в ней уже распознано: пока Claude работает над последней репликой, по этому началу
+        проверяем, не её ли это продолжение, — тогда его ход останавливается сразу. Проверка одна за раз, каждая — по свежему тексту."""
+        self.partial = text
+        if not self.settled and (self.checking is None or self.checking.done()):
+            self.checking = asyncio.create_task(self.check(pause))
+
+    async def check(self, pause: float | None) -> None:
+        while not self.settled and (text := self.partial) != self.asked:
+            self.asked = text
+            if last := await router.early(self.decisions, self.core, text, pause):
+                self.settled = self.core.interrupt(last.id)
+
+    def heard(self, text: str, pause: float | None = None) -> None:
         """Реплика закончена: распознанный текст — на решение, куда его отправить."""
         log("recognized", adapter=self.title, text=text)
+        if self.checking:  # опоздавшее раннее «да» остановило бы ход уже после решения по всей фразе
+            self.checking.cancel()
+        self.partial = self.asked = ""
+        self.settled = False
         if text:
             emit({"me": text})
-            task = asyncio.create_task(self.deliver(text))
+            task = asyncio.create_task(self.deliver(text, pause))
             self.delivering.add(task)
             task.add_done_callback(self.delivering.discard)
         else:
             emit({"state": "ничего не распознано"})
+            self.core.resume()  # ход остановили, а фразы не оказалось: прерванный запрос — заново
 
-    async def deliver(self, text: str) -> None:
+    async def deliver(self, text: str, pause: float | None) -> None:
         """Решение классификатора — в ядро, по одной реплике в порядке речи: следующая видит, куда ушла прошлая."""
         async with self.order:
-            d = await router.decide(self.decisions, self.core, text)
+            d = await router.decide(self.decisions, self.core, text, pause)
             self.core.call(d.name, {"heard": text, "replaces": d.replaces, "sure": True})
 
     def error(self, why: str) -> None:
@@ -177,23 +199,34 @@ def block(pcm: bytes) -> InputAudioRawFrame:
 
 class Utterances(UserTurnProcessor):
     """Конец конвейера вместо модели: тот же UserTurnProcessor, что решает конец реплики, плюс сбор распознанного.
-    Текст собирается здесь же: кадр с текстом проходит сюда раньше, чем по нему решается конец реплики."""
+    Текст собирается здесь же: кадр с текстом проходит сюда раньше, чем по нему решается конец реплики.
+    Незакрытый кусок распознанного (он ещё может поменяться) в реплику не идёт — только в раннюю проверку адаптера."""
 
     def __init__(self, adapter: Recognizer, strategies: UserTurnStrategies, stop_timeout: float) -> None:
         super().__init__(user_turn_strategies=strategies, user_turn_stop_timeout=stop_timeout)
         self.adapter = adapter
         self.parts: list[str] = []
+        self.quiet: float | None = None  # когда человек в последний раз замолчал (по VAD)
+        self.pause: float | None = None  # сколько он молчал перед идущей репликой
+        self.fresh = True  # идущая реплика ещё не началась
         self.add_event_handler("on_user_turn_started", self.started)
         self.add_event_handler("on_user_turn_stopped", self.stopped)
 
     async def process_frame(self, frame, direction) -> None:
-        if isinstance(frame, TranscriptionFrame) and frame.text.strip():
+        if isinstance(frame, VADUserStartedSpeakingFrame) and self.fresh:
+            self.pause, self.fresh = None if self.quiet is None else time.monotonic() - self.quiet, False
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self.quiet = time.monotonic()
+        elif isinstance(frame, TranscriptionFrame) and frame.text.strip():
             self.parts.append(frame.text.strip())
+            self.adapter.hearing(" ".join(self.parts), self.pause)
+        elif isinstance(frame, InterimTranscriptionFrame) and frame.text.strip():
+            self.adapter.hearing(" ".join([*self.parts, frame.text.strip()]), self.pause)
         await super().process_frame(frame, direction)
 
     async def started(self, _processor, _strategy) -> None:
         emit({"state": "слышу вас"})
 
     async def stopped(self, _processor, _strategy) -> None:
-        text, self.parts = " ".join(self.parts), []
-        self.adapter.heard(text)
+        text, self.parts, self.fresh = " ".join(self.parts), [], True
+        self.adapter.heard(text, self.pause)

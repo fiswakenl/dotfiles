@@ -7,6 +7,7 @@ import { decide, prompt, type Route } from "./orchestrator.ts";
 // или выбор командой /gv <имя> поверх неё. Плагин забирает у сервиса работу ручкой /next:
 // - ask — сообщением в окно Claude через мост (native/bridge.mjs, команды — через /call сервиса), с откатом, если это поправка;
 // - quick — веткой разговора ($.model.fork), основной ход не трогает;
+// - cancel — остановить идущий ход запроса: человек заговорил снова, и по первым словам это продолжение;
 // - route — реплика адаптера распознавания без решения: оркестратор ($.model.complete) решает, ask это, поправка или quick.
 // Ответ — ручкой /answer; Gemini его озвучит, у адаптеров распознавания человек читает его в окне. О каждом ходе Claude, и набранном
 // руками, плагин сообщает сервису (/call turn): пока ход идёт, новый ask ждёт в ядре, а quick и реплики идут своим чередом.
@@ -134,6 +135,10 @@ async function poll($, options, me: number): Promise<void> {
     const item = JSON.parse(r.text);
     if (item.kind === "quick") {
       void quick($, item);
+      continue;
+    }
+    if (item.kind === "cancel") { // человек заговорил, и это продолжение: ход этого запроса — стоп, остальное решит конец фразы
+      if (current === item.id) void bridge($, "cancel", {}).catch((err) => $.ui.log(`gv: ход не остановлен: ${String(err)}`, { to: "debug" }));
       continue;
     }
     try {

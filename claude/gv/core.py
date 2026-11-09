@@ -8,6 +8,9 @@
 - ask — новая мысль; ask с replaces=N — дополнение или поправка N: в очереди — подмена, отправленный или отвеченный — откат до N и новый текст;
   поздние запросы заменены, только когда откат удался и плагин назвал, что стёрто;
 - quick — быстрый вопрос по разговору: уходит сразу, даже пока Claude занят;
+- человек заговорил, пока Claude работает над последней репликой, и по первым словам это её продолжение — interrupt(): ход Claude
+  останавливается сразу, не дожидаясь конца фразы; фраза договорена — решение заново по всему тексту: продолжение — откат и
+  склеенный текст, как у любой поправки; не продолжение (или ничего не распознано) — прерванный запрос уходит заново;
 - ответы звучат по одному, когда Gemini договорила и человек молчит; из ждущих первым — ответ на последний заданный вопрос
   (он свежее в голове; quick спрашивают позже основного — он и звучит первым); опоздавший quick всё равно звучит: это другая мысль;
 - ответ на заменённый запрос не звучит, даже если уже ждал в очереди речи;
@@ -49,6 +52,8 @@ class Core:
         self.working = False  # идёт ход основного Claude — любой, и набранный руками; сообщает плагин
         self.speech: list[tuple[int, str]] = []  # (номер запроса, что сказать) — ждут, пока голосовой канал свободен
         self.utterances: list[str] = []  # реплики без решения — ждут оркестратора плагина
+        self.cut: int | None = None  # ask, чей ход остановлен на первых словах новой фразы: ждёт решения по ней целиком
+        self.cancels: list[int] = []  # остановки хода — ждут плагина
         self.listening = False  # человек говорит
         self.turn: float | None = None  # ждём конца хода Gemini (с этого времени)
         self.alive = time.monotonic()  # последний признак жизни от Gemini
@@ -66,6 +71,7 @@ class Core:
         if not text:
             return "Пустой текст: ничего не передано."
         if name == "quick":
+            self.resume()
             r = self._add("quick", text)
             return f"Вопрос №{r.id} передан."
         if not sure and (dup := self._duplicate(text)):
@@ -76,6 +82,7 @@ class Core:
             old = self.reqs[old.by]
         if old and (old.kind != "ask" or old.state == "failed"):
             old = None
+        self.resume(keep=old)
         if old and heard:  # расшифровка — только новое; полный текст — прежний плюс новое
             text = f"{old.text} {heard}"
         # Поправка ещё не отправленного запроса наследует его откат: история Claude та же, что ждала его.
@@ -92,9 +99,36 @@ class Core:
             self.log("utter", text=text)
             self.changed.set()
 
+    def working_on(self) -> Req | None:
+        """Последняя переданная реплика, если Claude сейчас работает именно над ней: только её ход можно остановить на полуслове."""
+        last = next((r for r in reversed(self.reqs.values()) if r.kind == "ask" and r.state in ("queued", "sent", "answered")), None)
+        return last if last and last.state == "sent" and self.busy == last.id else None
+
+    def interrupt(self, id: int) -> bool:
+        """Остановить ход Claude над запросом id: человек заговорил снова, и это его продолжение. Запрос ждёт решения по всей фразе."""
+        r = self.working_on()
+        if not r or r.id != id:
+            return False  # Claude успел ответить или работает уже над другим
+        self.cut = id
+        self.cancels.append(id)
+        self.log("cut", id=id)
+        self.emit({"cut": id})
+        self.changed.set()
+        return True
+
+    def resume(self, keep: Req | None = None) -> None:
+        """Фраза, остановившая ход, договорена. Она не продолжила прерванный запрос (keep — кого она поправляет) — он уходит заново
+        тем же текстом; успел ответить до остановки — возвращать нечего."""
+        r, self.cut = self.reqs.get(self.cut or 0), None
+        if r and r is not keep and r.state in ("sent", "answered") and not r.answer:
+            self._supersede(r, self._add("ask", r.text, r.id).id)
+
     # ── плагин ──────────────────────────────────────────────────────────────────
     def next(self) -> dict | None:
-        """Что отдать плагину: реплики на решение — первыми, quick и поправки — сразу, новый ask — когда Claude свободен."""
+        """Что отдать плагину: остановка хода — первой, затем реплики на решение, quick и поправки — сразу, новый ask — когда
+        Claude свободен."""
+        if self.cancels:
+            return {"kind": "cancel", "id": self.cancels.pop(0)}
         if self.utterances:
             return {"kind": "route", "text": self.utterances.pop(0), "busy": self.claude_busy(),
                     "recent": [{"id": r.id, "kind": r.kind, "state": r.state, "text": r.text, "answer": r.answer[:300]} for r in self.recent(10)]}
@@ -193,7 +227,7 @@ class Core:
 
     def idle(self) -> bool:
         """Ничего не ждём: ни реплик, ни запросов, ни ответов, ни речи."""
-        return not self.utterances and not self.speech and self.turn is None and not any(r.state in ("queued", "sent") for r in self.reqs.values())
+        return not self.utterances and not self.cancels and not self.speech and self.turn is None and not any(r.state in ("queued", "sent") for r in self.reqs.values())
 
     # ── внутреннее ──────────────────────────────────────────────────────────────
     def _add(self, kind: str, text: str, rewind: int | None = None) -> Req:
