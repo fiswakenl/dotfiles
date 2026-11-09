@@ -14,6 +14,8 @@
 
 Без -o страница ложится рядом с записью и открывается в браузере. Весь запуск по событиям, со звуком, — trace_view.py.
 """
+import base64
+import io
 import json
 import re
 import subprocess
@@ -72,6 +74,24 @@ def level(rows: list[dict], sound: Path, a: float, b: float) -> dict | None:
     rms = [(sum(x * x for x in pcm[i:i + size]) / size) ** 0.5 for i in range(0, len(pcm) - size + 1, size)]
     top = max(rms, default=0) or 1
     return {"step": LEVEL_S, "from": max(a, start), "v": [round(x / top * 100) for x in rms]}
+
+
+def clip(rows: list[dict], sound: Path, a: float, b: float) -> dict | None:
+    """Звук отрезка для проигрывателя страницы: WAV внутри страницы (data URI), from — момент его начала."""
+    start = next((r["ts"] for r in rows if r["ev"] == "audio.start"), None)
+    if start is None or not sound.exists():
+        return None
+    with wave.open(str(sound)) as w:
+        rate, width, channels = w.getframerate(), w.getsampwidth(), w.getnchannels()
+        w.setpos(min(w.getnframes(), max(0, round((a - start) * rate))))
+        pcm = w.readframes(round((b - max(a, start)) * rate))
+    out = io.BytesIO()
+    with wave.open(out, "wb") as o:
+        o.setnchannels(channels)
+        o.setsampwidth(width)
+        o.setframerate(rate)
+        o.writeframes(pcm)
+    return {"from": max(a, start), "src": "data:audio/wav;base64," + base64.b64encode(out.getvalue()).decode()}
 
 
 def collect(rows: list[dict], a: float, b: float) -> dict:
@@ -160,10 +180,12 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 #log .hd{color:#9ca3af;text-transform:uppercase;letter-spacing:.04em;font-size:11.5px}
 #log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#log .dt{display:inline-block;width:70px;text-align:right;color:#9ca3af;margin-right:12px}
 #log .who{display:inline-block;width:150px;color:#6b7280}#log .near{background:#fef3c7}#log .fut{opacity:.4}#log .near .dt{color:#b45309}
+#head{display:flex;align-items:center;gap:10px}#play{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;width:30px;height:24px;border:1px solid #d1d5db;border-radius:5px;background:#fff;cursor:pointer;color:#111}
+#play:disabled{opacity:.3;cursor:default}#play.on{background:#111;color:#fff;border-color:#111}
 .dim{color:#9ca3af}.key{font-weight:600}.red{color:#dc2626;font-weight:600}.past{color:#6b7280}#cap>b.t0{color:#111}
 </style>
 <div class="w">
-<div class="mono" id="head"></div>
+<div class="mono" id="head"><button id="play" title="пробел — играть или пауза; клик по шкале — играть с этого места">▶</button><span id="title"></span></div>
 <div id="tl"></div>
 <div id="cap"></div>
 <div id="now"></div>
@@ -242,7 +264,9 @@ function draw() {
     if (old) h += `<div class="v old" ${at_('cut', old.t)} style="left:${LEFT + x(old.t)}px"></div>`;
   }
   tl.innerHTML = h + '<div id="cur"></div>';
-  tl.onmousemove = e => { const px = e.clientX - tl.getBoundingClientRect().left - LEFT; if (px >= 0 && px <= W) at(T0 + px / S); };
+  const pick = e => { const px = e.clientX - tl.getBoundingClientRect().left - LEFT; return px >= 0 && px <= W ? T0 + px / S : null; };
+  tl.onmousemove = e => { const t = pick(e); if (t != null && !playing()) at(t); };
+  tl.onclick = e => { const t = pick(e); if (t != null && AUDIO) play(t); };
   at(NOW);
 }
 
@@ -340,7 +364,26 @@ function stopped(c) {
   return (phrase ? ` через ${num(c.t - phrase.a)} с` : '') + (old ? dim(' · откат ') + `<span class="red">+${num(old.t - c.t)} с</span>` : '');
 }
 
-document.getElementById('head').textContent = `gv · decisions · __NAME__ · ${clock(D.from)}–${clock(D.to)}`;
+// Проигрыватель: звук отрезка лежит в самой странице; пока играет, курсор и всё под ним идут вместе со звуком.
+const AUDIO = D.audio ? new Audio(D.audio.src) : null, BTN = document.getElementById('play');
+const playing = () => AUDIO && !AUDIO.paused;
+function play(t) {
+  AUDIO.currentTime = Math.max(0, Math.min(t, D.to) - D.audio.from);
+  AUDIO.play();
+}
+function follow() {
+  if (!playing()) return;
+  at(D.audio.from + AUDIO.currentTime);
+  requestAnimationFrame(follow);
+}
+if (AUDIO) {
+  AUDIO.onplay = () => { BTN.textContent = '⏸'; BTN.classList.add('on'); follow(); };
+  AUDIO.onpause = AUDIO.onended = () => { BTN.textContent = '▶'; BTN.classList.remove('on'); };
+  BTN.onclick = () => playing() ? AUDIO.pause() : play(NOW >= D.to - 0.05 ? D.audio.from : NOW);
+  addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); BTN.onclick(); } });
+} else BTN.disabled = true;
+
+document.getElementById('title').textContent = `gv · decisions · __NAME__ · ${clock(D.from)}–${clock(D.to)}`;
 draw();
 addEventListener('resize', draw);
 </script>
@@ -356,6 +399,7 @@ def main() -> None:
     rows = [json.loads(line) for line in (TRACES / f"{name}.jsonl").read_text().splitlines() if line.strip()]
     data = collect(rows, *span(rows, *(args[1:3] + [None, None])[:2]))
     data["level"] = level(rows, TRACES / f"{name}.wav", data["from"], data["to"])
+    data["audio"] = clip(rows, TRACES / f"{name}.wav", data["from"], data["to"])
     command = f"uv run --script ~/.claude/gv/decisions_view.py {name} {clock(data['from'])} {clock(data['to'])}" + (f' -o "{out}"' if out else "")
     page = (PAGE.replace("__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/")).replace("__NAME__", name)
             .replace("__COMMAND__", command))
