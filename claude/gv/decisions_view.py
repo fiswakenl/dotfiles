@@ -251,7 +251,7 @@ const TILES = [
     return c ? [`«${esc(c.text)}»`, c.t] : ['—', null]; }],
   ['final', '<u class="tk f" style="left:16px"></u>', 'is_final=true', t => {
     const c = lastOf(D.chunks.filter(c => c.final), t);
-    return c ? [dim(`speech_final=${c.pause}, from_finalize=${c.by_us} · `) + `«${esc(c.text)}»`, c.t] : ['—', null]; }],
+    return c ? [`«${esc(c.text)}» ` + dim(`speech_final=${c.pause}, from_finalize=${c.by_us}`), c.t] : ['—', null]; }],
   ['fin', '<u class="fz" style="left:12px">▼</u>', 'Finalize', t => {
     const a = lastOf(D.asks_dg, t);
     if (!a) return ['—', null];
