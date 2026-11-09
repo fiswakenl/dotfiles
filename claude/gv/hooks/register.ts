@@ -231,10 +231,10 @@ async function choose($, options, name: string): Promise<string> {
   chosen = name;
   await $.fs.write(await voiceFile($), name).catch(() => {});
   await $.fs.write(await stateFile($), "on").catch(() => {});
-  if (!running) return void turnOn($, options), `gv включается: ${ADAPTERS[name]}.`;
-  if (same) return `уже ${ADAPTERS[name]}.`;
+  if (!running) return void turnOn($, options), `вкл · ${ADAPTERS[name]}`;
+  if (same) return `уже ${ADAPTERS[name]}`;
   void launch($, options).then((up) => $.ui.status(up ? `${ADAPTERS[name]} · ${BASE}` : "сервис не поднялся"));
-  return `${ADAPTERS[name]}: сервис перезапускается.`;
+  return `→ ${ADAPTERS[name]}`;
 }
 
 // ── правила голосовых сообщений для Claude ────────────────────────────────────
@@ -268,13 +268,13 @@ export function register(on, options) {
   // /gv — переключатель; /gv <адаптер> — другой адаптер.
   on("command.run", { command: "gv" }, async ($, e) => {
     const name = e.args.trim().toLowerCase();
-    if (name) return { text: name in ADAPTERS ? await choose($, options, name) : `gv: нет адаптера «${name}»; есть ${Object.keys(ADAPTERS).join(", ")}.` };
+    if (name) return { text: name in ADAPTERS ? await choose($, options, name) : `нет «${name}»: ${Object.keys(ADAPTERS).join(" · ")}` };
     if (running) {
       await turnOff($);
-      return { text: "gv выключен: сервис и сокеты остановлены. /gv — включить." };
+      return { text: "выкл" };
     }
     void turnOn($, options);
-    return { text: `gv включается: ${ADAPTERS[voiceOf(options)]}, сервис поднимается.` };
+    return { text: `вкл · ${ADAPTERS[voiceOf(options)]}` };
   });
 
   // Сессия закрылась — сервис уходит сразу, не ждёт потерянных пингов.
