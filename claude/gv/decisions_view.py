@@ -76,7 +76,7 @@ def level(rows: list[dict], sound: Path, a: float, b: float) -> dict | None:
 
 def collect(rows: list[dict], a: float, b: float) -> dict:
     rows = [r for r in rows if a <= r["ts"] <= b]
-    d = {"from": a, "to": b, "speech": [], "chunks": [], "phrases": [], "decisions": [], "asks": [], "cuts": [], "local": []}
+    d = {"from": a, "to": b, "speech": [], "chunks": [], "phrases": [], "decisions": [], "asks": [], "cuts": [], "local": [], "asks_dg": [], "replies": []}
     began = heard = None  # начало идущего отрезка речи; начало идущей фразы
     for i, r in enumerate(rows):
         ev, ts, text = r["ev"], r["ts"], str(r.get("text") or "")
@@ -86,7 +86,11 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
             d["speech"].append([began, ts])
             began = None
         elif ev in ("stt.interim", "stt.final"):
-            d["chunks"].append({"t": ts, "text": text, "final": ev == "stt.final"})
+            d["chunks"].append({"t": ts, "text": text, "final": ev == "stt.final", "by_us": bool(r.get("finalized")), "pause": bool(r.get("speech_final"))})
+        elif ev == "dg.finalize":
+            d["asks_dg"].append({"t": ts, "why": r.get("why", "")})
+        elif ev == "dg.finalize.reply":
+            d["replies"].append({"t": ts, "text": text})
         elif ev == "recognized":
             if text:
                 d["phrases"].append({"a": heard or ts, "b": ts, "text": text})
@@ -107,10 +111,12 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
             d["asks"].append({"t": ts, "id": r["id"], "kind": ev, "text": text, "rewind": r.get("rewind")})
         elif ev == "cut":
             d["cuts"].append({"t": ts, "id": r["id"]})
+    if not d["asks_dg"]:  # запись старше записи «верни»: Pipecat шлёт его на каждый конец речи по Silero, пока сокет открыт
+        d["asks_dg"] = [{"t": b2, "why": "silero: пауза", "derived": True} for _, b2 in d["speech"]]
     return d
 
 
-PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x540">
+PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x570">
 <title>gv · decisions · __NAME__</title>
 <!-- обновить или взять другой отрезок: __COMMAND__ -->
 <style>
@@ -125,6 +131,7 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 .row.snd{height:56px}.row.snd>b{top:18px}.row.snd svg{position:absolute;left:0;top:3px;height:50px}
 .vad{position:absolute;top:3px;height:50px;background:#dbeafe;border-radius:3px}
 .tk{position:absolute;top:6px;height:16px;border-left:2px solid #93c5fd}.tk.f{top:3px;height:22px;border-left:4px solid #1d4ed8;margin-left:-1px}
+.fz{position:absolute;top:-2px;font-size:12px;line-height:12px;margin-left:-5px;color:#7c3aed}
 .rh{position:absolute;top:8px;width:12px;height:12px;margin-left:-6px;transform:rotate(45deg);background:#fff;border:2px solid #7c3aed}.rh.y{background:#7c3aed}
 .lab{position:absolute;top:4px;font-size:12.5px;white-space:nowrap;background:#fff;padding:0 3px;z-index:2;color:#6b7280}.lab.y{font-weight:700;color:#c2410c}
 .v{position:absolute;top:0;bottom:22px;width:0;border-left:2px solid #dc2626;z-index:1}.v.old{border-left:2px dashed #9ca3af}
@@ -148,6 +155,7 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
  <span><i><u class="wv"></u></i>громкость; фон — Silero слышит голос</span>
  <span><i><u class="rh" style="left:6px"></u><u class="rh y" style="left:24px"></u></i>smart turn: не договорил · договорил</span>
  <span><i><u class="tk" style="left:10px;top:3px"></u><u class="tk f" style="left:22px;top:0"></u></i>кусок текста: открытый · закрытый</span>
+ <span><i><u class="fz" style="left:18px;top:5px">▼</u></i>наше «верни» в Deepgram: шлём на каждую паузу по Silero</span>
  <span><i><u class="bar no" style="width:16px"></u><u class="bar yes" style="left:20px;width:16px"></u></i>вопрос к Decisions: нет · да; длина — сколько думал, число — вероятность</span>
  <span><i><u class="bar cl" style="width:36px">№1</u></i>Claude работает над запросом</span>
  <span><i><u class="ln" style="left:10px"></u><u class="ln old" style="left:24px"></u></i>стоп · откат, который был бы без него</span>
@@ -182,7 +190,8 @@ function draw() {
   // Локальная модель конца реплики: вердикт на каждой паузе в звуке; закрашен — «договорил».
   h += row('smart turn') + D.local.map(m => `<div class="rh ${m.yes ? 'y' : ''}" style="left:${x(m.t)}px"></div>`).join('') + '</div>';
   // Текст: отметка там, где кусок пришёл; толстая — закрытый. Сам текст — под шкалой, по курсору.
-  h += row('deepgram') + D.chunks.map(c => `<div class="tk ${c.final ? 'f' : ''}" style="left:${x(c.t)}px"></div>`).join('') + '</div><div class="row gap"></div>';
+  h += row('deepgram') + D.asks_dg.map(a => `<span class="fz" style="left:${x(a.t)}px">▼</span>`).join('') +
+    D.chunks.map(c => `<div class="tk ${c.final ? 'f' : ''}" style="left:${x(c.t)}px"></div>`).join('') + '</div><div class="row gap"></div>';
   for (const kind of ['early', 'done', 'route'])
     h += row(NAME[kind]) + D.decisions.filter(c => c.kind === kind).map((c, i, all) =>
       bar(c.t - c.d, c.t, c.yes ? 'yes' : 'no') +
@@ -226,9 +235,24 @@ function at(t) {
     `<b>${clock(t, true)}</b><span class="text">${text || none}</span>` +
     `<b>ты</b><span>${speaking ? 'говоришь' : quiet ? `молчишь ${num(t - quiet[1], 1)} с` : 'молчишь'}` +
       (turn ? dim(` · smart turn ${num(t - turn.t, 1)} с назад: `) + (turn.yes ? 'договорил' : 'не договорил') : '') + '</span>' +
+    `<b>deepgram</b><span>${source(t)}</span>` +
     `<b>claude</b><span>${!ask ? none : cut ? `№${ask.id} <span class="key">остановлен</span>${stopped(cut)}` : `№${ask.id} работает`}</span>` +
     `<b>decisions</b><span>${!q ? none : `${NAME[q.kind]} ` + dim(`«${ASK[q.kind]}» по «${esc(q.text)}»` + (q.pause != null ? `, пауза ${num(q.pause, 1)} с` : '')) +
       (going ? dim(' · думает') : ` → <span class="key">${num(q.p)}</span> ` + dim(`за ${num(q.d)} с ·`) + ` <span class="${q.yes ? 'key' : ''}">${outcome(q)}</span>`)}</span>`;
+}
+
+// Откуда последний кусок текста: открыт; закрыт нашим «верни» (и кто его послал); закрыт самим Deepgram — по его паузе или без неё.
+function source(t) {
+  const c = D.chunks.filter(k => k.t <= t).pop(), req = D.asks_dg.filter(a => a.t <= t).pop();
+  const waiting = req && (!c || c.t < req.t) && !D.replies.some(r => r.t >= req.t && r.t <= t);
+  if (waiting) return `«верни» отправлено ${num(t - req.t)} с назад` + dim(' · послал Silero: пауза в звуке · ждём ответ');
+  if (!c) return '<span class="dim">—</span>';
+  const ago = dim(` · ${num(t - c.t)} с назад`), sent = req && c.t - req.t < 1.5 ? req : null;
+  if (!c.final) return `«${esc(c.text)}» <span class="key">открыт</span>` + ago;
+  const head = `«${esc(c.text)}» <span class="key">закрыт</span> `;
+  if (c.by_us) return head + `нашим «верни»` + dim(` · его послал Silero: пауза ${sent ? num(c.t - sent.t) + ' с до этого' : ''}`) + ago;
+  return head + (c.pause ? 'самим Deepgram: услышал паузу' : 'самим Deepgram: слова устоялись, паузы не было') +
+    (sent ? dim(` · наше «верни» от Silero ушло на ${num(c.t - sent.t)} с раньше и опоздало`) : '') + ago;
 }
 
 // Сколько прошло от первого слова фразы до стопа и на сколько позже ход остановил бы откат.
