@@ -228,11 +228,13 @@ export function register(on, options) {
     };
   });
 
-  // Ход без новой реплики сразу после голосового — продолжение того же запроса; набранное руками обрывает цепочку.
+  // Ход без новой реплики сразу после голосового (продолжение или итог фоновой задачи, <task-notification>) — тот же запрос;
+  // набранное руками обрывает цепочку.
   on("turn.start", async ($, e, next) => {
     if (e.agentId || e.text.startsWith(MARK)) return next(e);
-    if (e.text === "" && !current && lastVoice) current = lastVoice;
-    else if (e.text !== "") lastVoice = 0;
+    const continued = e.text === "" || e.text.startsWith("<task-notification>");
+    if (continued && !current && lastVoice) current = lastVoice;
+    else if (!continued) lastVoice = 0;
     return next(e);
   });
 
