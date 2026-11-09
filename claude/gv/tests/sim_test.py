@@ -2,7 +2,8 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""Все сценарии на ядре (core.py) без Claude и Gemini: ненастоящий плагин отвечает словом-маркером, речь длится SAY_S.
+"""Все сценарии на ядре (core.py) без Claude и Gemini: ненастоящий плагин отвечает словом-маркером, речь длится SAY_S,
+оркестратор решает так, как сказано в шаге сценария.
 Время ускорено в 1/SCALE раз; запуск: uv run --script tests/sim_test.py"""
 import asyncio
 import re
@@ -34,6 +35,7 @@ class Sim:
         self.texts: dict[int, str] = {}
         self.says: list[tuple[float, str]] = []
         self.turn: asyncio.Task | None = None
+        self.decisions: dict[str, dict] = {}  # текст реплики → решение ненастоящего оркестратора
 
     def emit(self, e: dict) -> None:
         if "ask" in e:
@@ -59,6 +61,10 @@ class Sim:
             r = self.core.next()
             if not r:
                 await asyncio.sleep(0.01 * SCALE)
+                continue
+            if r["kind"] == "route":
+                d = self.decisions[r["text"]]
+                self.core.call("quick" if d.get("quick") else "ask", {"heard": r["text"], "replaces": d.get("replaces") or 0, "sure": True})
                 continue
             if r["kind"] == "quick":
                 asyncio.create_task(self.reply(r["id"], QUICK_S))
@@ -88,6 +94,12 @@ class Sim:
             return "ok"
         if name == "rewind":
             return self.rewind(args["target"])
+        if name == "utter":  # реплика уходит оркестратору; номер — когда он решит
+            self.decisions[args["text"]] = args
+            self.core.utter(args["text"])
+            while not (r := next((r for r in self.core.reqs.values() if r.text.endswith(args["text"])), None)):
+                await asyncio.sleep(0.01 * SCALE)
+            return f"№{r.id}"
         return self.core.call(name, args)
 
 

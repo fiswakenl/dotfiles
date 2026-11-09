@@ -1,10 +1,12 @@
 """Сценарии GV данными: что человек «сказал» (вызовы, как их прислала бы Gemini) и что должно получиться.
 
 Шаг — (когда, имя, аргументы): когда — секунды от начала сценария или слово (шаг идёт, как только это слово прозвучало);
-имя — как у /call: ask, quick, listen (человек говорит args.seconds секунд), rewind (мост). replaces: "#2" — номер второго вызова сценария.
+имя — как у /call: ask, quick, listen (человек говорит args.seconds секунд), rewind (мост), utter (распознанная реплика без решения;
+решение оркестратора — в тех же аргументах: replaces или quick). replaces: "#2" — номер второго вызова сценария.
 Ожидания: say — слова ответов в порядке звучания; say_any — те же, в любом порядке; never — не должно прозвучать;
 history — голосовые сообщения в истории Claude после сценария; not_before — слово звучит не раньше, чем через столько секунд.
-ОШИБКА — сообщение Gemini о том, что запрос не дошёл. sim_only — только в симуляции (сбой моста вживую не устроить);
+ОШИБКА — сообщение Gemini о том, что запрос не дошёл. sim_only — только в симуляции (сбой моста вживую не устроить,
+решение оркестратора вживую принимает модель);
 live_only — только вживую (фоновых задач у ненастоящего Claude нет).
 """
 import asyncio
@@ -68,15 +70,27 @@ SCENARIOS = [
     dict(name="откат до первого сообщения",
          steps=[(0, "ask", {"text": fast("МАЯК")}), ("МАЯК", "ask", {"text": fast("НОЧЬ")}), ("НОЧЬ", "rewind", {"target": 1})],
          say=["МАЯК", "НОЧЬ"], history=[]),
+    dict(name="оркестратор: новая мысль",
+         steps=[(0, "utter", {"text": fast("МАЯК")})],
+         say=["МАЯК"], history=["МАЯК"], sim_only=True),
+    dict(name="оркестратор: две новые мысли подряд не склеиваются в поправку",
+         steps=[(0, "utter", {"text": slow("МАЯК", 5)}), (1, "utter", {"text": fast("НОЧЬ")})],
+         say=["МАЯК", "НОЧЬ"], history=["МАЯК", "НОЧЬ"], sim_only=True),
+    dict(name="оркестратор: продолжение → откат, текст — прежний и новое",
+         steps=[(0, "utter", {"text": slow("МАЯК", 20)}), (5, "utter", {"text": "Нет, отбой: ответь словом НОЧЬ", "replaces": "#1"})],
+         say=["НОЧЬ"], never=["МАЯК"], history=["НОЧЬ"], sim_only=True),
+    dict(name="оркестратор: quick, пока Claude занят",
+         steps=[(0, "utter", {"text": slow("МАЯК", 20)}), (3, "utter", {"text": fast("СОВА"), "quick": True})],
+         say=["СОВА", "МАЯК"], history=["МАЯК"], sim_only=True),
 ]
 
 WORDS = sorted({w for s in SCENARIOS for w in [*s.get("say", []), *s.get("say_any", []), *s.get("never", [])]})
 
 
 def word_of(text: str) -> str:
-    """Какое слово-маркер в тексте ответа (Claude может добавить точку или кавычки)."""
+    """Какое слово-маркер в тексте ответа (Claude может добавить точку или кавычки); в поправке «прежний текст и новое» — последнее."""
     up = text.upper()
-    return next((w for w in WORDS if w in up), text[:40])
+    return max((w for w in WORDS if w in up), key=up.rfind, default=text[:40])
 
 
 def check(s: dict, says: list[tuple[float, str]], history: list[str], say_s: float) -> list[str]:

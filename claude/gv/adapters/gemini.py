@@ -1,7 +1,7 @@
-"""Голосовой канал: Gemini Live (сокет, микрофон, колонки) и его текстовая замена для тестов.
+"""Адаптер Gemini Live: Gemini слушает человека и сама решает, когда и какую функцию вызвать; читает вслух ответы Claude.
 
-Оба дают одно и то же: say(text) — сказать человеку, listen(args) — речь вместо микрофона, start() — фоновые задачи.
-О человеке и ходах Gemini сообщают ядру: core.hear(), core.turn_end(), core.heartbeat().
+Текст вызова — не её пересказ, а её же расшифровка речи; её собственная речь в колонки не идёт, кроме чтения ответов.
+О человеке и ходах Gemini сообщает ядру: core.hear(), core.turn_end(), core.heartbeat().
 """
 import asyncio
 import base64
@@ -9,17 +9,15 @@ import json
 import os
 import re
 import time
-from collections import deque
 from pathlib import Path
 
+from adapters import PROMPTS, Adapter
+from adapters.mic import Mic
 from journal import emit, log, rec_close, rec_open
 
-HERE = Path(__file__).resolve().parent
 GEMINI_WS = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 MODEL = "models/gemini-3.8-live"
-LOUD = 500  # уровень (RMS int16), с которого блок звука считается речью
 IDLE_S = 30  # столько тишины — и сокет закрываем: открытый копит память разговора и закрывается Google сам
-PRE = 3  # блоков по 100 мс предыстории перед речью
 SILENCE_MARK = re.compile(r"\s*<(no( speech>?)?)?\s*|\s*speech>\s*|.*\{pause\}.*|.*<no speech.*", re.S)  # «молчу» от модели кусками
 
 
@@ -39,40 +37,23 @@ def tools() -> list[dict]:
 
 
 def system_text() -> str:
-    return "\n\n".join(f.read_text() for f in (HERE / "prompt.md", HERE / "context.md") if f.exists())
+    """Инструкция Gemini и необязательная дописка к ней (prompts/context.md)."""
+    return "\n\n".join(f.read_text() for f in (PROMPTS / "gemini.md", PROMPTS / "context.md") if f.exists())
 
 
-class Text:
-    """Без звука и сокета (GV_TEXT_ONLY=1): то, что ушло бы Gemini, — событие say; речь длится SAY_MS."""
-
-    def __init__(self, core) -> None:
-        self.core = core
-        self.say_s = int(os.environ.get("GV_SAY_MS", 1500)) / 1000
-
-    def start(self) -> list:
-        return []
-
-    async def say(self, text: str) -> None:
-        log("say", chars=len(text))
-        await asyncio.sleep(self.say_s)
-        self.core.turn_end()
-
-    async def listen(self, args: dict) -> str:
-        """Человек говорит args.seconds секунд, затем Gemini отвечает ему (SAY_MS)."""
-        self.core.hear(True)
-        await asyncio.sleep(float(args.get("seconds", 3)))
-        self.core.hear(False)
-        await asyncio.sleep(self.say_s)
-        self.core.turn_end()
-        return "ok"
+def about() -> str:
+    return system_text() + "\n\n— Функции —\n" + "\n".join(f"{t['name']}: {t['description']}" for t in tools()[0]["functionDeclarations"])
 
 
-class Live:
+class Live(Adapter):
     """Gemini Live: сокет открывается по требованию (заговорил, пришёл ответ) и закрывается после тишины; микрофон и колонки компьютера."""
 
-    def __init__(self, core, duplex: bool, pause_ms: int) -> None:
-        """duplex — слушать и пока Gemini говорит: её можно перебить (громкие колонки дают эхо — тише или наушники)."""
-        self.core, self.duplex, self.pause_ms = core, duplex, pause_ms
+    title = "Gemini Live"
+    speaks = True
+
+    def __init__(self, core) -> None:
+        super().__init__(core)
+        self.duplex = os.environ.get("GV_DUPLEX", "on") == "on"  # слушать и пока Gemini говорит: её можно перебить (громкие колонки дают эхо)
         self.ws = None
         self.lock = asyncio.Lock()
         self.speaking = False  # Gemini читает ответ Claude; остальная её речь (ответы от себя) не звучит — она телефон
@@ -85,6 +66,9 @@ class Live:
 
     def start(self) -> list:
         return [self.sleeper(), self.mic()]
+
+    def about(self) -> str:
+        return about()
 
     # ── сокет ──
     async def open(self):
@@ -240,46 +224,20 @@ class Live:
 
     async def mic(self) -> None:
         """Микрофон → Gemini, только пока есть речь (тишина тарифицируется как речь); после речи — пауза на размышление."""
-        import numpy as np
-        import sounddevice as sd
-        loop, q = asyncio.get_running_loop(), asyncio.Queue()
-        try:
-            stream = sd.RawInputStream(samplerate=16000, channels=1, dtype="int16", blocksize=1600,
-                                       callback=lambda data, *_: loop.call_soon_threadsafe(q.put_nowait, bytes(data)))
-            stream.start()
-        except Exception as ex:  # noqa: BLE001
-            return emit({"error": f"микрофон: {type(ex).__name__}: {ex}"})
+        mic = Mic(self.pause_ms, muted=lambda: self.spk.busy and not self.duplex)  # без duplex свой голос из колонок не слушаем
         log("mic.start", duplex=self.duplex)
-        emit({"state": "микрофон слушает"})
-        talking, quiet, pre, hang = False, 0, deque(maxlen=PRE), self.pause_ms // 100
-        while True:
-            b = await q.get()
-            if self.spk.busy and not self.duplex:  # Gemini говорит: свой голос из колонок не слушаем
-                pre.clear()
-                continue
-            loud = float(np.sqrt(np.mean(np.frombuffer(b, dtype=np.int16).astype(np.float32) ** 2))) > LOUD
+        async for event, pcm in mic.blocks():
             try:
-                if loud and not talking:
-                    talking = True
+                if event == "start":
                     self.core.hear(True)
-                    log("mic.speech.start")
-                    emit({"state": "слышу вас"})
-                    for p in pre:
-                        await self.send(chunk(p))
-                    pre.clear()
-                if not talking:
-                    pre.append(b)
-                    continue
-                await self.send(chunk(b))
-                quiet = 0 if loud else quiet + 1
-                if quiet > hang:
-                    talking = False
-                    log("mic.speech.end", pause_ms=self.pause_ms)
+                elif event == "audio":
+                    await self.send(chunk(pcm))
+                else:
                     await self.send({"realtimeInput": {"audioStreamEnd": True}})
                     self.core.hear(False)
                     emit({"state": "жду ответа"})
             except Exception as ex:  # noqa: BLE001
-                talking = False
+                mic.stop()
                 self.core.hear(False)
                 emit({"error": f"отправка в Gemini: {type(ex).__name__}: {ex}"})
                 await asyncio.sleep(2)

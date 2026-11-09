@@ -1,6 +1,8 @@
 """Логика GV без звука и сети: запросы к Claude и очередь речи.
 
-Один вход — call(name, args): его зовут и Gemini (toolCall), и ручка /call. Плагин забирает запросы next() и отдаёт ответы answer().
+Один вход — call(name, args): его зовут голосовой канал, оркестратор плагина и ручка /call. Плагин забирает запросы next() и отдаёт ответы answer().
+Реплику без решения (распознавание без модели) канал отдаёт utter(text): плагин заберёт её next() как route, решит оркестратором
+и вернёт сюда же call() с sure — решение точное, догадки за Gemini (повтор, переформулировка) не нужны.
 Правила:
 - ask — новая мысль; ask с replaces=N — дополнение или поправка N: в очереди — подмена, отправленный или отвеченный — откат до N и новый текст;
 - quick — быстрый вопрос по разговору: уходит сразу, даже пока Claude занят;
@@ -41,25 +43,28 @@ class Core:
         self.reqs: dict[int, Req] = {}
         self.busy: int | None = None  # ask, над которым сейчас работает Claude
         self.speech: list[tuple[int, str]] = []  # (номер запроса, что сказать) — ждут, пока голосовой канал свободен
+        self.utterances: list[str] = []  # реплики без решения — ждут оркестратора плагина
         self.listening = False  # человек говорит
         self.turn: float | None = None  # ждём конца хода Gemini (с этого времени)
         self.alive = time.monotonic()  # последний признак жизни от Gemini
         self.changed = asyncio.Event()  # появился запрос для плагина
 
-    # ── Gemini и /call ──────────────────────────────────────────────────────────
+    # ── голосовой канал, оркестратор и /call ────────────────────────────────────
     def call(self, name: str, args: dict) -> str:
-        """args.heard — расшифровка речи после прошлого вызова (её даёт голосовой канал): точнее текста модели, берём её."""
+        """args.heard — расшифровка речи после прошлого вызова (её даёт голосовой канал): точнее текста модели, берём её.
+        args.sure — решение принял оркестратор: replaces ровно как сказано, без догадок."""
         heard = str(args.get("heard") or "").strip()
         text = heard or str(args.get("text") or "").strip()
+        sure = bool(args.get("sure"))
         if not text:
             return "Пустой текст: ничего не передано."
         if name == "quick":
             r = self._add("quick", text)
             return f"Вопрос №{r.id} передан."
-        if dup := self._duplicate(text):
+        if not sure and (dup := self._duplicate(text)):
             self.log("ask.duplicate", id=dup.id)
             return f"Запрос №{dup.id} уже передан."
-        old = self.reqs.get(int(args.get("replaces") or 0)) or self._just_asked()
+        old = self.reqs.get(int(args.get("replaces") or 0)) or (None if sure else self._just_asked())
         while old and old.by:  # Gemini поправила уже заменённый — значит, его свежую замену
             old = self.reqs[old.by]
         if old and (old.kind != "ask" or old.state == "failed"):
@@ -73,9 +78,19 @@ class Core:
             self._supersede(old, r.id)
         return f"Запрос №{r.id} передан" + (f" вместо №{old.id}." if old else ".")
 
+    def utter(self, text: str) -> None:
+        """Законченная реплика без решения: ask, поправка или quick — решит оркестратор плагина."""
+        if text := text.strip():
+            self.utterances.append(text)
+            self.log("utter", text=text)
+            self.changed.set()
+
     # ── плагин ──────────────────────────────────────────────────────────────────
     def next(self) -> dict | None:
-        """Что отдать плагину: quick и поправки — сразу, новый ask — когда Claude свободен."""
+        """Что отдать плагину: реплики на решение — первыми, quick и поправки — сразу, новый ask — когда Claude свободен."""
+        if self.utterances:
+            return {"kind": "route", "text": self.utterances.pop(0), "busy": any(r.kind == "ask" and r.state in ("queued", "sent") for r in self.reqs.values()),
+                    "recent": [{"id": r.id, "kind": r.kind, "state": r.state, "text": r.text, "answer": r.answer[:300]} for r in self.recent(10)]}
         for r in self.reqs.values():
             if r.state == "queued" and (r.kind == "quick" or r.rewind or self.busy is None):
                 r.state = "sent"
@@ -143,8 +158,8 @@ class Core:
         return not self.listening and not self.speech and self.turn is None
 
     def idle(self) -> bool:
-        """Ничего не ждём: ни запросов, ни ответов, ни речи."""
-        return not self.speech and self.turn is None and not any(r.state in ("queued", "sent") for r in self.reqs.values())
+        """Ничего не ждём: ни реплик, ни запросов, ни ответов, ни речи."""
+        return not self.utterances and not self.speech and self.turn is None and not any(r.state in ("queued", "sent") for r in self.reqs.values())
 
     # ── внутреннее ──────────────────────────────────────────────────────────────
     def _add(self, kind: str, text: str, rewind: int | None = None) -> Req:

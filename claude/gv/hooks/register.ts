@@ -1,34 +1,43 @@
 import { atom, read, update } from "claude-code";
+import { decide, prompt, type Route } from "./orchestrator.ts";
 
-// Голос через Gemini Live ⇄ сессия Claude Code.
+// Голос ⇄ сессия Claude Code.
 //
-// Человек говорит с Gemini; она пересказывает его слова вызовами ask и quick (voice.py, логика — core.py).
-// Плагин забирает запросы ручкой /next: ask — сообщением в окно Claude через мост (native/bridge.mjs), с откатом, если это поправка;
-// quick — веткой разговора ($.model.fork), основной ход не трогает. Ответ — ручкой /answer, Gemini его озвучит.
-// Сервис сам перезапускается при правке своих файлов (раз в 10 с); правка этого файла перезагружает плагин и сервис.
-// Сервис поднимается на старте сессии и выходит сам, если плагин перестал пинговать.
-// Все обращения к движку — только здесь: `$` через импорт не передаётся.
+// Сервис (voice.py, логика — core.py) слушает человека через голосовой адаптер (adapters/), адаптер выбирается настройкой voice.
+// Плагин забирает у сервиса работу ручкой /next:
+// - ask — сообщением в окно Claude через мост (native/bridge.mjs), с откатом, если это поправка;
+// - quick — веткой разговора ($.model.fork), основной ход не трогает;
+// - route — реплика адаптера распознавания без решения: оркестратор ($.model.complete) решает, ask это, поправка или quick.
+// Ответ — ручкой /answer; Gemini его озвучит, у адаптеров распознавания человек читает его в окне.
+// Сервис поднимается на старте сессии, перезапускается при правке своих файлов и выходит сам, если плагин перестал пинговать;
+// правка этого файла или настроек перезагружает плагин, а с ним и сервис. `$` через импорт не передаётся: все обращения к движку — здесь.
+
+const ADAPTERS: Record<string, string> = { gemini: "Gemini Live", deepgram: "Deepgram", openai: "OpenAI" };
+const MARK = "🎙"; // голосовое сообщение: по метке Claude знает, что оно распознано из речи
+const TRIES = 6;
+const PING_MS = 20_000;
+const RETRY_MS = 2_000;
+const ORCHESTRATOR = { model: "haiku", maxTokens: 64, timeoutMs: 8_000 };
+const TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
 // Работает одна сессия с плагином: новая вытесняет старую — просит прежний сервис выйти (/quit) и занимает его порт.
 let PORT = 8790;
 let BASE = `http://127.0.0.1:${PORT}`;
-const TRIES = 6;
-const MARK = "🎙"; // голосовое сообщение: по метке система знает, что ответ зачитают вслух
-const PING_MS = 20_000;
-const RETRY_MS = 2_000;
-const TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
-let current = 0; // запрос, над которым идёт голосовой ход; 0 — ход не голосовой
-let lastVoice = 0;
-const quickRows = atom({ plugin: "gv", key: "quickRows" } as const, {} as Record<string, { id: number; q: string; a: string }[]>);
-const quickOpen = atom({ plugin: "gv", key: "quickOpen" } as const, [] as number[]); // последний отвеченный голосовой запрос: ход без новой реплики (итог фоновой задачи) — его продолжение
 let started = false;
 let running = false; // голос включён в этом экземпляре плагина
 let healing = false;
+let current = 0; // запрос, над которым идёт голосовой ход; 0 — ход не голосовой
+let lastVoice = 0; // последний отвеченный голосовой запрос: ход без новой реплики (итог фоновой задачи) — его продолжение
 const voiceMessages = new Map<number, string>(); // номер запроса → UUID его сообщения в истории Claude
 const queued = new Map<string, number>(); // текст сообщения, вставшего в очередь Claude, → номер запроса
+const quickRows = atom({ plugin: "gv", key: "quickRows" } as const, {} as Record<string, { id: number; q: string; a: string }[]>);
+const quickOpen = atom({ plugin: "gv", key: "quickOpen" } as const, [] as number[]);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const voiceOf = (options): string => (String(options.voice) in ADAPTERS ? String(options.voice) : "gemini");
+
+// ── сервис ────────────────────────────────────────────────────────────────────
 
 const call = ($, path: string, init: { method?: string; body?: string } = {}) =>
   $.http.fetch(`${BASE}${path}`, { ...init, headers: { "content-type": "application/json" } });
@@ -37,7 +46,83 @@ const post = ($, path: string, body: unknown = {}) => call($, path, { method: "P
 
 const answer = ($, id: number, body: { text?: string; error?: string }) => post($, `/answer?id=${id}`, body).catch(() => {});
 
-// Мост в окно Claude теми же именами, что у /call: send, rewind.
+// Хозяин сервиса записан в файле: новый экземпляр плагина (другая сессия или перезагрузка) пишет туда свой номер, старый видит
+// чужой номер и молча уходит — не опрашивает и не поднимает сервис заново.
+async function tokenFile($): Promise<string> {
+  return `${await $.env.get("HOME")}/.claude/gv${PORT === 8790 ? "" : "-" + PORT}.token`;
+}
+
+async function stale($): Promise<boolean> {
+  const owner = String(await $.fs.read(await tokenFile($)).catch(() => "")).trim();
+  return owner !== "" && owner !== TOKEN;
+}
+
+// Поднять сервис отдельным процессом (вывод — ~/.claude/gv.out); true — отвечает.
+async function launch($, options): Promise<boolean> {
+  await $.fs.write(await tokenFile($), TOKEN).catch(() => {});
+  await post($, "/quit").catch(() => {});
+  for (let i = 0; i < 20; i++) {
+    if (!(await $.http.fetch(`${BASE}/`).catch(() => null))) break;
+    await sleep(250);
+  }
+  const env = [`GV_PORT=${PORT}`, `GV_VOICE=${voiceOf(options)}`, `GV_DUPLEX=${options.duplex ?? "on"}`, `GV_PAUSE_MS=${String(options.pause ?? "2500")}`];
+  const pass = {
+    GV_NATIVE_SOCKET: await $.env.get("GV_NATIVE_SOCKET"),
+    GV_TEXT_ONLY: await $.env.get("GV_TEXT_ONLY"),
+    GV_SAY_MS: await $.env.get("GV_SAY_MS"),
+  }; // сервису: мост и тестовый режим
+  for (const [key, value] of Object.entries(pass)) if (value) env.push(`${key}='${value}'`);
+  await $.process
+    .run(["sh", "-c", `${env.join(" ")} nohup uv run -q --script '${$.plugin.root}/voice.py' >>"$HOME/.claude/gv.out" 2>&1 &`])
+    .catch((err) => $.ui.log(`gv: запуск не удался: ${String(err)}`, { to: "debug" }));
+  for (let i = 0; i < 40; i++) {
+    await sleep(500);
+    if ((await post($, "/ping").catch(() => null))?.ok) return true;
+  }
+  return false;
+}
+
+// Цикл работы от сервиса: ask и route — по одному, quick — сразу в фоне. Сервис не отвечает несколько раз подряд — поднимаем заново.
+async function poll($, options): Promise<void> {
+  let down = 0;
+  while (running) {
+    if (await stale($)) return; // сервис теперь у другого экземпляра плагина или остановлен: молча уходим
+    let r;
+    try {
+      r = await call($, "/next?wait=1");
+      down = 0;
+    } catch {
+      await sleep(RETRY_MS);
+      if (!running || (await stale($))) return;
+      if (++down >= 3 && !healing) {
+        healing = true;
+        down = 0;
+        await launch($, options).catch(() => false);
+        healing = false;
+      }
+      continue;
+    }
+    if (r.status !== 200 || !r.text) {
+      if (r.status !== 204) await sleep(RETRY_MS);
+      continue;
+    }
+    const item = JSON.parse(r.text);
+    if (item.kind === "quick") {
+      void quick($, item);
+      continue;
+    }
+    try {
+      await (item.kind === "route" ? route($, item) : deliver($, item));
+    } catch (error) {
+      if (item.kind === "ask") await answer($, item.id, { error: String(error) });
+      $.ui.status(String(error));
+    }
+  }
+}
+
+// ── работа ────────────────────────────────────────────────────────────────────
+
+// Мост в окно Claude теми же именами, что у /call: send, rewind, list.
 async function bridge($, name: string, args: Record<string, unknown>): Promise<any> {
   const socket = await $.env.get("GV_NATIVE_SOCKET");
   if (!socket) throw new Error("мост не подключён: запустите Claude через ccg");
@@ -84,86 +169,27 @@ async function quick($, r: { id: number; text: string }): Promise<void> {
   await $.session.append({ message: { type: "user", content: [{ type: "text", text: line }] } }).catch(() => {});
 }
 
-// Хозяин сервиса записан в файле: новый экземпляр плагина (другая сессия или перезагрузка) пишет туда свой номер, старый видит чужой
-// номер и молча уходит — не опрашивает и не поднимает сервис заново.
-async function tokenFile($): Promise<string> {
-  return `${await $.env.get("HOME")}/.claude/gv${PORT === 8790 ? "" : "-" + PORT}.token`;
+// Реплика адаптера распознавания: оркестратор — один короткий вызов модели без форка и прогрева чата, видит конец разговора
+// и переданные реплики. Решение — обратно в сервис тем же входом, что у Gemini; текст — расшифровка как есть.
+async function route($, item: Route): Promise<void> {
+  const [rules, messages] = await Promise.all([
+    $.fs.read(`${$.plugin.root}/prompts/orchestrator.md`).then(String).catch(() => ""),
+    $.session.messages().catch(() => []),
+  ]);
+  const reply = await $.model.complete({ ...ORCHESTRATOR, system: rules, prompt: prompt(messages, item) }).catch(() => null);
+  if (!reply?.isAnswered) $.ui.log(`gv: оркестратор не ответил (${reply?.reason ?? "ошибка"}), реплика — новой мыслью`, { to: "debug" });
+  const d = decide(reply?.isAnswered ? reply.text : "", item);
+  await post($, "/call", { name: d.name, args: { heard: item.text, replaces: d.replaces, sure: true } });
 }
 
-async function stale($): Promise<boolean> {
-  const owner = String(await $.fs.read(await tokenFile($)).catch(() => "")).trim();
-  return owner !== "" && owner !== TOKEN;
-}
-
-// Поднять сервис отдельным процессом (вывод — ~/.claude/gv.out); true — отвечает.
-async function launch($, options): Promise<boolean> {
-  await $.fs.write(await tokenFile($), TOKEN).catch(() => {});
-  await post($, "/quit").catch(() => {});
-  for (let i = 0; i < 20; i++) {
-    if (!(await $.http.fetch(`${BASE}/`).catch(() => null))) break;
-    await sleep(250);
-  }
-  const env = [`GV_PORT=${PORT}`, `GV_DUPLEX=${options.duplex ?? "on"}`, `GV_PAUSE_MS=${String(options.pause ?? "2500")}`];
-  const pass = {
-    GV_NATIVE_SOCKET: await $.env.get("GV_NATIVE_SOCKET"),
-    GV_TEXT_ONLY: await $.env.get("GV_TEXT_ONLY"),
-    GV_SAY_MS: await $.env.get("GV_SAY_MS"),
-  }; // сервису: мост и тестовый режим
-  for (const [key, value] of Object.entries(pass)) if (value) env.push(`${key}='${value}'`);
-  await $.process
-    .run(["sh", "-c", `${env.join(" ")} nohup uv run -q --script '${$.plugin.root}/voice.py' >>"$HOME/.claude/gv.out" 2>&1 &`])
-    .catch((err) => $.ui.log(`gv: запуск не удался: ${String(err)}`, { to: "debug" }));
-  for (let i = 0; i < 40; i++) {
-    await sleep(500);
-    if ((await post($, "/ping").catch(() => null))?.ok) return true;
-  }
-  return false;
-}
-
-// Цикл запросов: ask — по одному, quick — сразу в фоне. Сервис не отвечает несколько раз подряд — поднимаем его заново.
-async function poll($, options): Promise<void> {
-  let down = 0;
-  while (running) {
-    if (await stale($)) return; // сервис теперь у другого экземпляра плагина или остановлен: молча уходим
-    let r;
-    try {
-      r = await call($, "/next?wait=1");
-      down = 0;
-    } catch {
-      await sleep(RETRY_MS);
-      if (!running || (await stale($))) return;
-      if (++down >= 3 && !healing) {
-        healing = true;
-        down = 0;
-        await launch($, options).catch(() => false);
-        healing = false;
-      }
-      continue;
-    }
-    if (r.status !== 200 || !r.text) {
-      if (r.status !== 204) await sleep(RETRY_MS);
-      continue;
-    }
-    const item = JSON.parse(r.text);
-    if (item.kind === "quick") {
-      void quick($, item);
-      continue;
-    }
-    try {
-      await deliver($, item);
-    } catch (error) {
-      await answer($, item.id, { error: String(error) });
-      $.ui.status(String(error));
-    }
-  }
-}
+// ── включение и выбор адаптера ────────────────────────────────────────────────
 
 // Файл ~/.claude/gv.state ("on" / "off"): включён ли голос. Переживает перезагрузку плагина и перезапуск сессии; меняет его команда /gv.
 async function stateFile($): Promise<string> {
   return (await $.env.get("GV_STATE_FILE")) || `${await $.env.get("HOME")}/.claude/gv.state`;
 }
 
-// Включить: стать хозяином, поднять сервис, открыть страницу, запустить цикл запросов.
+// Включить: стать хозяином, поднять сервис, открыть страницу, запустить цикл.
 async function turnOn($, options): Promise<void> {
   if (running) return;
   running = true;
@@ -177,16 +203,39 @@ async function turnOn($, options): Promise<void> {
   if (!running) return;
   if (!up) return void $.ui.status("сервис не поднялся");
   if (options.open === "on" && (await $.env.get("GV_TEXT_ONLY")) !== "1") void $.process.run(["open", BASE]).catch(() => {});
-  else $.ui.status(BASE);
+  else $.ui.status(`${ADAPTERS[voiceOf(options)]} · ${BASE}`);
 }
 
-// Выключить: цикл стоит, сервис и сокет Gemini закрыты, выключенность запомнена.
+// Выключить: цикл стоит, сервис и сокеты закрыты, выключенность запомнена.
 async function turnOff($): Promise<void> {
   running = false;
   await $.fs.write(await stateFile($), "off").catch(() => {});
   await post($, "/quit").catch(() => {});
   $.ui.status("выкл");
 }
+
+// Другой адаптер — это настройка voice плагина, та же строка, что в /config: выбор запомнен в настройках, а её смена
+// перезагружает плагин, и новый экземпляр поднимает сервис с новым адаптером. Выбрать адаптер — заодно включить голос.
+async function choose($, options, name: string): Promise<string> {
+  await $.fs.write(await stateFile($), "on").catch(() => {});
+  if (voiceOf(options) === name) {
+    if (running) return `gv: уже ${ADAPTERS[name]}.`;
+    void turnOn($, options);
+    return `gv включается: ${ADAPTERS[name]}.`;
+  }
+  const row = (await $.config.list()).find((r) => r.provider.plugin === $.plugin.name && r.key.endsWith(".voice"));
+  if (!row) return "gv: настройка voice не найдена в /config.";
+  const { deny } = await $.config.set({ key: row.key, value: name });
+  return deny ? `gv: не переключился: ${deny}` : `gv: ${ADAPTERS[name]} — плагин перезагрузится и поднимет сервис заново.`;
+}
+
+// ── правила голосовых сообщений для Claude ────────────────────────────────────
+
+const HEARD = `Сообщения, которые начинаются с ${MARK}, пришли голосом: распознанная речь человека почти дословно, возможны ошибки распознавания.`;
+const ALOUD = "Твой ответ зачитают вслух, поэтому: 1–3 короткие фразы простыми словами, без списков, таблиц, кода и разметки; сначала суть.";
+const CONSENT =
+  "Если сказано поручить работу (править файлы, запускать команды, что-то делать в проекте), не начинай без спроса: одной фразой " +
+  "скажи, что собираешься сделать, и спроси «делаю?». Вопросы, объяснения и чтение файлов можно сразу.";
 
 export function register(on, options) {
   on("session.start", async ($, e, next) => {
@@ -195,7 +244,11 @@ export function register(on, options) {
     started = true;
     PORT = Number(await $.env.get("GV_PORT")) || 8790;
     BASE = `http://127.0.0.1:${PORT}`;
-    await $.command.register({ name: "gv", description: "Включить или выключить голос (сервис Gemini и сокеты)" });
+    await $.command.register({
+      name: "gv",
+      description: `Голос: без имени — включить или выключить; с именем — сменить адаптер (${Object.keys(ADAPTERS).join(", ")})`,
+      argumentHint: `[${Object.keys(ADAPTERS).join("|")}]`,
+    });
     $.clock.every(PING_MS, () => void post($, "/ping").catch(() => {})); // пока идёт пинг, сервис живёт
     const off = String(await $.fs.read(await stateFile($)).catch(() => "")).trim() === "off";
     if (off) $.ui.status("выкл");
@@ -203,40 +256,29 @@ export function register(on, options) {
     return result;
   });
 
-  // /gv — переключатель: включён → выключить, выключен → включить.
-  on("command.run", { command: "gv" }, async ($) => {
+  // /gv — переключатель; /gv <адаптер> — другой адаптер.
+  on("command.run", { command: "gv" }, async ($, e) => {
+    const name = e.args.trim().toLowerCase();
+    if (name) return { text: name in ADAPTERS ? await choose($, options, name) : `gv: нет адаптера «${name}»; есть ${Object.keys(ADAPTERS).join(", ")}.` };
     if (running) {
       await turnOff($);
       return { text: "gv выключен: сервис и сокеты остановлены. /gv — включить." };
     }
     void turnOn($, options);
-    return { text: "gv включается: сервис поднимается, страница откроется сама." };
+    return { text: `gv включается: ${ADAPTERS[voiceOf(options)]}, сервис поднимается.` };
   });
 
-  // Сессия закрылась — сервис с сокетом Gemini уходит сразу, не ждёт потерянных пингов.
+  // Сессия закрылась — сервис уходит сразу, не ждёт потерянных пингов.
   on("session.end", async ($, e, next) => {
     await post($, "/quit").catch(() => {});
     return next(e);
   });
 
-  // Правила для голосовых сообщений: коротко, зачитывается вслух, поручения — только после согласия.
+  // Правила для голосовых сообщений: распознанная речь, поручения — только после согласия; у Gemini ответ ещё и звучит.
   on("prompt.compose", async ($, e, next) => {
     const base = await next(e);
-    return {
-      sections: [
-        ...base.sections,
-        {
-          id: "gv:voice",
-          scope: "session" as const,
-          text:
-            `Сообщения, которые начинаются с ${MARK}, пришли голосом: распознанная речь человека почти дословно, ` +
-            "возможны ошибки распознавания. Твой ответ зачитают вслух, поэтому: 1–3 короткие фразы простыми " +
-            "словами, без списков, таблиц, кода и разметки; сначала суть. Если сказано поручить работу " +
-            "(править файлы, запускать команды, что-то делать в проекте), не начинай без спроса: одной фразой " +
-            "скажи, что собираешься сделать, и спроси «делаю?». Вопросы, объяснения и чтение файлов можно сразу.",
-        },
-      ],
-    };
+    const text = [HEARD, ...(voiceOf(options) === "gemini" ? [ALOUD] : []), CONSENT].join(" ");
+    return { sections: [...base.sections, { id: "gv:voice", scope: "session" as const, text }] };
   });
 
   // Ход без новой реплики сразу после голосового (продолжение или итог фоновой задачи, <task-notification>) — тот же запрос;
@@ -244,7 +286,7 @@ export function register(on, options) {
   on("turn.start", async ($, e, next) => {
     if (e.agentId) return next(e);
     const waiting = queued.get(e.text);
-    if (waiting) {  // дошла очередь до сообщения, что ждало: теперь это голосовой ход, а UUID — из истории
+    if (waiting) { // дошла очередь до сообщения, что ждало: теперь это голосовой ход, а UUID — из истории
       queued.delete(e.text);
       current = waiting;
       const list = await bridge($, "list", {}).catch(() => null);
