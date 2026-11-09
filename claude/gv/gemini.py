@@ -146,7 +146,7 @@ class Live:
                     log("gemini.error", error=str(e["error"])[:500])
                     emit({"error": str(e["error"])})
                 for fc in e.get("toolCall", {}).get("functionCalls", []):
-                    await self.on_call(fc)
+                    asyncio.create_task(self.on_call(fc))  # в фоне: вызов ждёт расшифровку, а она приходит тем же сокетом
                 await self.on_content(e.get("serverContent", {}))
         except Exception as ex:  # noqa: BLE001
             why = f"{type(ex).__name__}: {ex}"
@@ -163,6 +163,7 @@ class Live:
     # ── что пришло от Gemini ──
     async def on_call(self, fc: dict) -> None:
         """Gemini решает, когда и что вызвать; текст — не её пересказ, а всё, что она расшифровала после прошлого вызова."""
+        await self.settle()
         args, heard = fc.get("args", {}), "".join(self.heard).strip()
         self.heard.clear()
         log("gemini.call", name=fc["name"], args=args, heard=heard)
@@ -176,6 +177,16 @@ class Live:
             await self.ws.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc["id"], "name": fc["name"], "response": {"result": result, "scheduling": "SILENT"}}]}}))
         except Exception:  # noqa: BLE001 — сокет оборвался: вызов и так пропал
             pass
+
+    async def settle(self, most: float = 1.5, quiet: float = 0.3) -> None:
+        """Расшифровка иногда приходит после вызова: ждём, пока она появится и перестанет прибывать (не дольше most)."""
+        end, count, since = time.monotonic() + most, len(self.heard), time.monotonic()
+        while time.monotonic() < end:
+            await asyncio.sleep(0.1)
+            if len(self.heard) != count:
+                count, since = len(self.heard), time.monotonic()
+            elif self.heard and time.monotonic() - since > quiet:
+                return
 
     async def on_content(self, c: dict) -> None:
         for p in c.get("modelTurn", {}).get("parts", []):
@@ -196,6 +207,8 @@ class Live:
             self.spk.clear()
             log("interrupted")
         if c.get("turnComplete"):
+            if self.heard and not self.heard[-1].endswith((" ", "\n")):
+                self.heard.append(" ")  # следующая реплика — через пробел, не слитно
             self.speaking = False
             log("turn", audio_sent_bytes=self.sent, audio_got_bytes=self.got)
             self.core.turn_end()
