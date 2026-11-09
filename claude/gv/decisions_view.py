@@ -134,7 +134,7 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 #now{margin-top:10px;display:grid;grid-template-columns:var(--l) 1fr;gap:3px 0;align-items:baseline}
 #now>b{font-weight:400;text-align:right;padding-right:12px}#now>.text{font-size:17px;min-height:25px}
 .open{background:#bfdbfe;border-radius:2px;padding:1px 2px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
-.red{color:#dc2626}.gy{color:#9ca3af}
+.dim{color:#9ca3af}.key{font-weight:600}.red{color:#dc2626;font-weight:600}.past{color:#6b7280}#now>b:first-child{color:#111}
 </style>
 <div class="w">
 <div class="mono" id="head"></div>
@@ -149,6 +149,7 @@ const ASK = {early: 'начало продолжения?', done: 'мысль з
 const num = (x, n = 2) => x.toFixed(n).replace('.', ',');
 const clock = (t, frac) => { const d = new Date(t * 1000), p = n => String(n).padStart(2, '0');
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}` + (frac ? ',' + p(Math.floor(t % 1 * 100)) : ''); };
+const dim = s => `<span class="dim">${s}</span>`;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
 const outcome = c => c.kind === 'early' ? (c.yes ? `стоп №${c.last}` : 'ждём следующий кусок')
   : c.kind === 'done' ? (c.yes ? 'фраза закрыта' : 'ждём продолжения')
@@ -200,25 +201,27 @@ function at(t) {
   const phrase = D.phrases.find(p => t >= p.a && t <= p.b), last = D.phrases.filter(p => p.b < t).pop();
   const got = phrase ? D.chunks.filter(c => c.t >= phrase.a && c.t <= t) : [], tail = got[got.length - 1];
   const done = got.filter(c => c.final).map(c => c.text).join(' '), open = tail && !tail.final ? tail.text : '';
-  const text = phrase ? `${esc(done)} ${open ? `<span class="open">${esc(open)}</span>` : ''}`.trim() : last ? esc(last.text) : '';
+  // Идущая фраза — в полную силу, открытая часть выделена; уже закрытая фраза — приглушённо.
+  const text = phrase ? `${esc(done)} ${open ? `<span class="open">${esc(open)}</span>` : ''}`.trim() : last ? `<span class="past">${esc(last.text)}</span>` : '';
   const speaking = D.speech.some(([a, b]) => t >= a && t <= b), quiet = D.speech.filter(s => s[1] < t).pop();
   const turn = D.local.filter(m => m.t <= t).pop();
   const ask = D.asks.filter(a => a.t <= t).pop(), cut = ask && D.cuts.find(c => c.id === ask.id && c.t <= t);
   const call = D.decisions.filter(c => c.t <= t).pop(), going = D.decisions.find(c => c.t - c.d <= t && c.t > t), q = going ?? call;
-  const none = '<span class="gy">—</span>';
+  // В каждой строке главное — в полную силу, подробности — приглушённо, решающее число — жирным.
+  const none = '<span class="dim">—</span>';
   document.getElementById('now').innerHTML =
     `<b>${clock(t, true)}</b><span class="text">${text || none}</span>` +
     `<b>ты</b><span>${speaking ? 'говоришь' : quiet ? `молчишь ${num(t - quiet[1], 1)} с` : 'молчишь'}` +
-      (turn ? ` · smart turn ${num(t - turn.t, 1)} с назад: ${turn.yes ? 'договорил' : 'не договорил'}` : '') + '</span>' +
-    `<b>claude</b><span>${!ask ? none : cut ? `№${ask.id} остановлен${stopped(cut)}` : `№${ask.id} работает`}</span>` +
-    `<b>decisions</b><span>${!q ? none : `${NAME[q.kind]} · «${ASK[q.kind]}» по «${esc(q.text)}»` + (q.pause != null ? ` · пауза ${num(q.pause, 1)} с` : '') +
-      (going ? ' · думает' : ` → ${num(q.p)} за ${num(q.d)} с · ${outcome(q)}`)}</span>`;
+      (turn ? dim(` · smart turn ${num(t - turn.t, 1)} с назад: `) + (turn.yes ? 'договорил' : 'не договорил') : '') + '</span>' +
+    `<b>claude</b><span>${!ask ? none : cut ? `№${ask.id} <span class="key">остановлен</span>${stopped(cut)}` : `№${ask.id} работает`}</span>` +
+    `<b>decisions</b><span>${!q ? none : `${NAME[q.kind]} ` + dim(`«${ASK[q.kind]}» по «${esc(q.text)}»` + (q.pause != null ? `, пауза ${num(q.pause, 1)} с` : '')) +
+      (going ? dim(' · думает') : ` → <span class="key">${num(q.p)}</span> ` + dim(`за ${num(q.d)} с ·`) + ` <span class="${q.yes ? 'key' : ''}">${outcome(q)}</span>`)}</span>`;
 }
 
 // Сколько прошло от первого слова фразы до стопа и на сколько позже ход остановил бы откат.
 function stopped(c) {
   const phrase = D.phrases.find(p => p.a <= c.t && p.b >= c.t), old = D.asks.find(a => a.rewind === c.id);
-  return (phrase ? ` через ${num(c.t - phrase.a)} с от первого слова` : '') + (old ? ` · откат был бы на <span class="red">${num(old.t - c.t)} с</span> позже` : '');
+  return (phrase ? ` через ${num(c.t - phrase.a)} с` + dim(' от первого слова') : '') + (old ? dim(' · откат был бы на ') + `<span class="red">${num(old.t - c.t)} с</span>` + dim(' позже') : '');
 }
 
 document.getElementById('head').textContent = `gv · decisions · __NAME__ · ${clock(D.from)}–${clock(D.to)}`;
