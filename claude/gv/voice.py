@@ -230,7 +230,8 @@ async def claude_steps() -> None:
 async def watchdog() -> None:
     """Раз в секунду: очередь речи (ход Gemini мог зависнуть); раз в 10 с — пинг плагина и правка кода (перезапуск).
     Промпты и страницу читают при каждом использовании — их правка перезапуска не требует."""
-    watched = [*HERE.glob("*.py"), *HERE.glob("adapters/*.py"), OVERLAY]
+    # Только код самого сервиса: просмотрщики записей (*_view.py) правятся, пока он работает, и перезапускать его не должны.
+    watched = [*(f for f in HERE.glob("*.py") if not f.name.endswith("_view.py")), *HERE.glob("adapters/*.py"), OVERLAY]
     stamp = {f: f.stat().st_mtime for f in watched}
     for tick in itertools.count(1):
         await asyncio.sleep(1)
