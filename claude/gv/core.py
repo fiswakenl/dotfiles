@@ -6,7 +6,8 @@
 - quick — быстрый вопрос по разговору: уходит сразу, даже пока Claude занят;
 - ответы звучат по одному, когда Gemini договорила и человек молчит; из ждущих первым — ответ на последний заданный вопрос
   (он свежее в голове; quick спрашивают позже основного — он и звучит первым); опоздавший quick всё равно звучит: это другая мысль;
-- ответ на заменённый запрос не звучит, даже если уже ждал в очереди речи.
+- ответ на заменённый запрос не звучит, даже если уже ждал в очереди речи;
+- ещё один ответ на отвеченный запрос (итог фоновой задачи Claude) звучит тоже.
 """
 import asyncio
 import itertools
@@ -14,6 +15,7 @@ import time
 from dataclasses import dataclass, field
 
 DUPLICATE_S = 30  # тот же текст ask за это время — повтор вызова, а не новый запрос
+SAME_THOUGHT_S = 3  # новый ask так скоро после прошлого — Gemini переформулировала ту же мысль: это поправка
 TURN_STALE_S = 10  # ход Gemini без признаков жизни столько секунд считаем законченным
 
 READ_ALOUD = "Прочитай это человеку вслух почти дословно, от первого лица, ничего не добавляя."
@@ -53,7 +55,7 @@ class Core:
         if dup := self._duplicate(text):
             self.log("ask.duplicate", id=dup.id)
             return f"Запрос №{dup.id} уже передан. Молчи."
-        old = self.reqs.get(int(args.get("replaces") or 0))
+        old = self.reqs.get(int(args.get("replaces") or 0)) or self._just_asked()
         if old and (old.kind != "ask" or old.state in ("superseded", "failed")):
             old = None
         # Поправка ещё не отправленного запроса наследует его откат: история Claude та же, что ждала его.
@@ -83,7 +85,7 @@ class Core:
     def answer(self, id: int, text: str = "", error: str = "") -> None:
         """Ответ плагина на запрос: текст (пустой — ход кончился без ответа) или ошибка доставки."""
         r = self.reqs.get(id)
-        if not r or r.state != "sent":
+        if not r or r.state not in ("sent", "answered"):
             self.log("answer.dropped", id=id, state=r.state if r else None)
             return self.emit({"dropped": id})
         if self.busy == id:
@@ -143,6 +145,10 @@ class Core:
             self.busy = None
         self.speech = [s for s in self.speech if s[0] != r.id]
         self.emit({"superseded": r.id})
+
+    def _just_asked(self) -> Req | None:
+        last = next((r for r in reversed(self.reqs.values()) if r.kind == "ask"), None)
+        return last if last and time.monotonic() - last.at < SAME_THOUGHT_S else None
 
     def _duplicate(self, text: str) -> Req | None:
         key, now = " ".join(text.lower().split()), time.monotonic()

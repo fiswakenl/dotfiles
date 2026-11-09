@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)]
+import core  # noqa: E402
 from core import Core  # noqa: E402
 from scenarios import SCENARIOS, check, play, word_of  # noqa: E402
 
@@ -19,6 +20,8 @@ SCALE = 0.02
 SAY_S = 1.5  # столько звучит ответ
 FAST_S = 1  # столько Claude отвечает без sleep
 QUICK_S = 3  # столько думает quick
+core.SAME_THOUGHT_S *= SCALE  # пороги ядра — в том же ускоренном времени
+core.DUPLICATE_S *= SCALE
 
 
 class Sim:
@@ -90,7 +93,7 @@ class Sim:
 
 class Scenarios(unittest.IsolatedAsyncioTestCase):
     async def test_all(self):
-        for s in SCENARIOS:
+        for s in (s for s in SCENARIOS if not s.get("live_only")):
             with self.subTest(s["name"]):
                 sim = Sim()
                 task = asyncio.create_task(sim.plugin())

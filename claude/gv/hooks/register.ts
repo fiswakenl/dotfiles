@@ -17,6 +17,7 @@ const RETRY_MS = 2_000;
 const TOKEN = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
 let current = 0; // запрос, над которым идёт голосовой ход; 0 — ход не голосовой
+let lastVoice = 0; // последний отвеченный голосовой запрос: ход без новой реплики (итог фоновой задачи) — его продолжение
 let started = false;
 let running = false; // голос включён в этом экземпляре плагина
 let healing = false;
@@ -227,11 +228,20 @@ export function register(on, options) {
     };
   });
 
+  // Ход без новой реплики сразу после голосового — продолжение того же запроса; набранное руками обрывает цепочку.
+  on("turn.start", async ($, e, next) => {
+    if (e.agentId || e.text.startsWith(MARK)) return next(e);
+    if (e.text === "" && !current && lastVoice) current = lastVoice;
+    else if (e.text !== "") lastVoice = 0;
+    return next(e);
+  });
+
   // Голосовой ход кончился — ответ сервису (пустой, если ответа нет: Claude всё равно свободен). Побочные ходы (агенты) не трогаем.
   on("turn.complete", async ($, e, next) => {
     if (e.agentId || !current) return next(e);
     const id = current;
     current = 0;
+    lastVoice = id;
     await answer($, id, { text: e.reason === "answer" ? e.answer.trim() : "" });
     return next(e);
   });
