@@ -76,6 +76,7 @@ class Live:
         self.ws = None
         self.lock = asyncio.Lock()
         self.speaking = False  # Gemini читает ответ Claude; остальная её речь (ответы от себя) не звучит — она телефон
+        self.voiced = False  # с начала чтения от неё уже пришёл голос: только после этого «ход окончен» — конец чтения
         self.sent = self.got = 0
         self.last = time.monotonic()  # последнее движение в голосовом канале
         self.heard: list[str] = []  # расшифровка речи человека после прошлого вызова — её и передаём, слово в слово
@@ -194,6 +195,7 @@ class Live:
                 pcm = base64.b64decode(p["inlineData"]["data"])
                 self.got += len(pcm)
                 if self.speaking:
+                    self.voiced = True
                     self.spk.add(pcm)
         if t := c.get("inputTranscription", {}).get("text"):
             self.heard.append(t)
@@ -207,6 +209,8 @@ class Live:
             self.spk.clear()
             log("interrupted")
         if c.get("turnComplete"):
+            if self.speaking and not self.voiced:  # запоздалый конец прошлого хода: чтение ещё не началось
+                return log("turn.stale")
             if self.heard and not self.heard[-1].endswith((" ", "\n")):
                 self.heard.append(" ")  # следующая реплика — через пробел, не слитно
             self.speaking = False
@@ -215,7 +219,7 @@ class Live:
 
     # ── что уходит в Gemini ──
     async def say(self, text: str) -> None:
-        self.speaking = True
+        self.speaking, self.voiced = True, False
         try:
             await self.send({"realtimeInput": {"text": text}})
         except Exception as ex:  # noqa: BLE001
