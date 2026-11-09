@@ -39,6 +39,10 @@ BLOCK_S = 0.02  # блок микрофона
 
 logger.remove()
 logger.add(sys.stderr, level="WARNING")  # в ~/.claude/gv.out — только сбои Pipecat
+# Решения о конце реплики — штатные отладочные записи Pipecat (Smart Turn, классификатор: вердикт и уверенность) — в журнал GV.
+TURN_LOGS = ("pipecat.audio.turn", "pipecat.turns.user_stop")
+logger.add(lambda m: log("turn", src=m.record["name"].rsplit(".", 1)[-1], text=m.record["message"]),
+           level="DEBUG", filter=lambda r: r["name"].startswith(TURN_LOGS), format="{message}")
 
 
 class Recognizer(Adapter):
@@ -139,7 +143,13 @@ def completion() -> ClassifierUserTurnStopStrategy:
         os.environ["HTTPS_PROXY"] = e["GEMINI_PROXY"]  # клиент OpenAI берёт прокси из окружения
     llm = OpenAILLMService(api_key=e["GEMINI_API_KEY"], base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                            settings=OpenAILLMService.Settings(model=TURN_MODEL))
-    return ClassifierUserTurnStopStrategy(classifier=LLMClassifier(llm=llm, max_tokens=200), classification_timeout=2.0)
+    classifier = LLMClassifier(llm=llm, max_tokens=200)
+
+    @classifier.event_handler("on_metrics")
+    async def timing(_c, data) -> None:  # сколько думал классификатор: штатные метрики Pipecat
+        log("turn.metrics", **{type(d).__name__: getattr(d.value, "model_dump", lambda: d.value)() for d in data})
+
+    return ClassifierUserTurnStopStrategy(classifier=classifier, classification_timeout=2.0)
 
 
 class Utterances(UserTurnProcessor):
