@@ -178,12 +178,14 @@ const outcome = c => c.kind === 'early' ? (c.yes ? `стоп №${c.last}` : 'ж
   : c.kind === 'done' ? (c.yes ? 'фраза закрыта' : 'ждём продолжения')
   : (c.yes ? `продолжение №${c.last}: откат и склейка` : 'новая мысль');
 // Все события отрезка словами протокола: кто кому что прислал. Показываются рядом с курсором — понятно, что за чем пришло.
-const flag = c => `is_final=${c.final}` + (c.final ? `, speech_final=${c.pause}, from_finalize=${c.by_us}` : '');
+const flag = c => !c.final ? 'черновик, слова ещё поменяются (is_final=false)'
+  : 'окончательно (is_final=true)' + (c.pause ? ', сам услышал паузу (speech_final=true)' : ', паузы не было (speech_final=false)') +
+    (c.by_us ? ', это ответ на наш Finalize (from_finalize=true)' : '');
 const EVENTS = [
   ...D.speech.flatMap(([a, b]) => [[a, 'Silero', 'голос начался · VADUserStartedSpeaking'], [b, 'Silero', 'тишина → голос кончился · VADUserStoppedSpeaking']]),
   ...D.asks_dg.map(a => [a.t, 'мы → Deepgram', 'Finalize («верни»)' + (a.derived ? ' · по коду Pipecat, в записи не было' : '')]),
   ...D.replies.map(r => [r.t, 'Deepgram → мы', `ответ на Finalize, from_finalize=true «${r.text}»`]),
-  ...D.chunks.map(c => [c.t, 'Deepgram → мы', `Results ${flag(c)} «${c.text}»`]),
+  ...D.chunks.map(c => [c.t, 'Deepgram → мы', `«${c.text}» — ${flag(c)}`]),
   ...D.local.map(m => [m.t, 'Smart Turn', `EndOfTurnState.${m.yes ? 'COMPLETE' : 'INCOMPLETE'} · по интонации ${m.yes ? 'договорил' : 'не договорил'}`]),
   ...D.decisions.flatMap(c => [[c.t - c.d, 'мы → Decisions', `${NAME[c.kind]}: «${ASK[c.kind]}» по «${c.text}»`],
                                [c.t, 'Decisions → мы', `p=${num(c.p)} за ${num(c.d)} с → ${outcome(c)}`]]),
@@ -246,12 +248,12 @@ const TILES = [
   ['turn', '<u class="rh" style="left:4px"></u><u class="rh y" style="left:20px"></u>', 'Smart Turn', t => {
     const m = lastOf(D.local, t);
     return m ? [`<b>${m.yes ? 'COMPLETE' : 'INCOMPLETE'}</b>`, m.t] : ['—', null]; }],
-  ['open', '<u class="tk" style="left:16px"></u>', 'is_final=false', t => {
+  ['open', '<u class="tk" style="left:16px"></u>', 'черновик', t => {
     const c = lastOf(D.chunks.filter(c => !c.final), t);
     return c ? [`«${esc(c.text)}»`, c.t] : ['—', null]; }],
-  ['final', '<u class="tk f" style="left:16px"></u>', 'is_final=true', t => {
+  ['final', '<u class="tk f" style="left:16px"></u>', 'окончательно', t => {
     const c = lastOf(D.chunks.filter(c => c.final), t);
-    return c ? [`«${esc(c.text)}» ` + dim(`speech_final=${c.pause}, from_finalize=${c.by_us}`), c.t] : ['—', null]; }],
+    return c ? [`«${esc(c.text)}» ` + dim(c.by_us ? 'ответ на наш Finalize' : c.pause ? 'Deepgram сам услышал паузу' : 'без паузы'), c.t] : ['—', null]; }],
   ['fin', '<u class="fz" style="left:12px">▼</u>', 'Finalize', t => {
     const a = lastOf(D.asks_dg, t);
     if (!a) return ['—', null];
