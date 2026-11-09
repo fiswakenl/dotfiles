@@ -141,7 +141,7 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 #cap{margin:12px 0 6px var(--l);display:flex;gap:14px;align-items:baseline}#cap b{font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
 #cap .text{font-size:17px}
 #now{margin-left:var(--l);display:grid;grid-template-columns:1fr 1fr;gap:0 22px}
-.tile{display:grid;grid-template-columns:38px 92px 1fr 52px;align-items:center;gap:0 6px;height:25px;padding:0 6px;border-radius:4px;font-size:13px;cursor:default}
+.tile{display:grid;grid-template-columns:38px 108px 1fr 52px;align-items:center;gap:0 6px;height:25px;padding:0 6px;border-radius:4px;font-size:13px;cursor:default}
 .tile.on{background:#fef3c7}.tile i{position:relative;height:22px;font-style:normal}.tile u{text-decoration:none}
 .tile .nm{color:#6b7280;font-size:12.5px;white-space:nowrap}.tile.on .nm{color:#b45309;font-weight:600}
 .tile .val{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tile .ago{text-align:right;color:#9ca3af;font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -238,7 +238,6 @@ function draw() {
 // Состояние на момент t, как на паузе: над легендой — собранный текст (открытая часть выделена); легенда — по строке на каждое
 // обозначение шкалы: значок, имя, его последнее значение к этому моменту и сколько назад. Сработавшие рядом с курсором — подсвечены.
 const lastOf = (list, t) => list.filter(e => (e.t ?? e) <= t).pop();
-const yes = v => v ? '✓' : '✗';
 // [ключ отметки, значок, имя, t → [значение, момент события или null]]
 const TILES = [
   ['vad', '<u class="wv"></u>', 'Silero', t => {
@@ -247,12 +246,12 @@ const TILES = [
   ['turn', '<u class="rh" style="left:4px"></u><u class="rh y" style="left:20px"></u>', 'Smart Turn', t => {
     const m = lastOf(D.local, t);
     return m ? [`<b>${m.yes ? 'COMPLETE' : 'INCOMPLETE'}</b>`, m.t] : ['—', null]; }],
-  ['open', '<u class="tk" style="left:16px"></u>', 'is_final ✗', t => {
+  ['open', '<u class="tk" style="left:16px"></u>', 'is_final=false', t => {
     const c = lastOf(D.chunks.filter(c => !c.final), t);
     return c ? [`«${esc(c.text)}»`, c.t] : ['—', null]; }],
-  ['final', '<u class="tk f" style="left:16px"></u>', 'is_final ✓', t => {
+  ['final', '<u class="tk f" style="left:16px"></u>', 'is_final=true', t => {
     const c = lastOf(D.chunks.filter(c => c.final), t);
-    return c ? [dim(`speech_final ${yes(c.pause)} · from_finalize ${yes(c.by_us)} · `) + `«${esc(c.text)}»`, c.t] : ['—', null]; }],
+    return c ? [dim(`speech_final=${c.pause}, from_finalize=${c.by_us} · `) + `«${esc(c.text)}»`, c.t] : ['—', null]; }],
   ['fin', '<u class="fz" style="left:12px">▼</u>', 'Finalize', t => {
     const a = lastOf(D.asks_dg, t);
     if (!a) return ['—', null];
