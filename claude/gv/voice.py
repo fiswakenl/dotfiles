@@ -119,7 +119,7 @@ async def start(_: web.Application) -> None:
         signal.signal(sig, lambda signum, _f: (log("exit", why=f"сигнал {signal.Signals(signum).name}"), os._exit(0)))
     core = Core(say=lambda text: voice.say(text), emit=emit, log=log)
     pause_ms = int(os.environ.get("GV_PAUSE_MS", 2500))
-    voice = gemini.Text(core) if TEXT_ONLY else gemini.Live(core, os.environ.get("GV_DUPLEX", "auto"), pause_ms)
+    voice = gemini.Text(core) if TEXT_ONLY else gemini.Live(core, os.environ.get("GV_DUPLEX", "on") == "on", pause_ms)
     log("start", port=PORT, text_only=TEXT_ONLY, pause_ms=pause_ms)
     for c in (watchdog(), *voice.start()):
         asyncio.create_task(c)

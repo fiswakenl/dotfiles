@@ -19,7 +19,6 @@ GEMINI_WS = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelang
 MODEL = "models/gemini-3.8-live"
 LOUD = 500  # уровень (RMS int16), с которого блок звука считается речью
 PRE = 3  # блоков по 100 мс предыстории перед речью
-HEADPHONES = re.compile(r"airpods|headphone|headset|наушник|гарнитур|buds|beats", re.I)  # звук в ухо — эха нет
 SILENCE_MARK = re.compile(r"\s*<(no( speech>?)?)?\s*|\s*speech>\s*|.*\{pause\}.*|.*<no speech.*", re.S)  # «молчу» от модели кусками
 
 
@@ -72,13 +71,9 @@ class Text:
 class Live:
     """Gemini Live: сокет открыт всё время, микрофон и колонки компьютера."""
 
-    def __init__(self, core, duplex: str, pause_ms: int) -> None:
-        """duplex: on — слушать всегда, off — молчать, пока Gemini говорит, auto — on только в наушниках (колонки дают эхо)."""
-        import sounddevice as sd
-        out = sd.query_devices(kind="output")["name"]
-        self.duplex = duplex == "on" or duplex == "auto" and bool(HEADPHONES.search(out))
-        self.core, self.pause_ms = core, pause_ms
-        log("audio.out", device=out, duplex=self.duplex)
+    def __init__(self, core, duplex: bool, pause_ms: int) -> None:
+        """duplex — слушать и пока Gemini говорит: её можно перебить (громкие колонки дают эхо — тише или наушники)."""
+        self.core, self.duplex, self.pause_ms = core, duplex, pause_ms
         self.ws = None
         self.lock = asyncio.Lock()
         # Речь Gemini в этом ходе: hold — ответ на реплику человека, придерживаем (вдруг перед вызовом функции);
