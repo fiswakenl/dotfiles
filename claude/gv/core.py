@@ -52,10 +52,10 @@ class Core:
             return "Пустой текст: ничего не передано."
         if name == "quick":
             r = self._add("quick", text)
-            return f"Вопрос №{r.id} передан, ответ придёт сообщением. Молчи."
+            return f"Вопрос №{r.id} передан."
         if dup := self._duplicate(text):
             self.log("ask.duplicate", id=dup.id)
-            return f"Запрос №{dup.id} уже передан. Молчи."
+            return f"Запрос №{dup.id} уже передан."
         old = self.reqs.get(int(args.get("replaces") or 0)) or self._just_asked()
         while old and old.by:  # Gemini поправила уже заменённый — значит, его свежую замену
             old = self.reqs[old.by]
@@ -66,8 +66,7 @@ class Core:
         r = self._add("ask", text, rewind)
         if old:
             self._supersede(old, r.id)
-        note = f" Прежний №{old.id} заменён." if old else ""
-        return f"Запрос №{r.id} передан.{note} Молчи. Если человек дополнит или поправит его, вызови ask с replaces={r.id} и полным текстом."
+        return f"Запрос №{r.id} передан" + (f" вместо №{old.id}." if old else ".")
 
     # ── плагин ──────────────────────────────────────────────────────────────────
     def next(self) -> dict | None:
