@@ -8,6 +8,7 @@
 import asyncio
 import base64
 import sys
+import time
 
 import sounddevice as sd
 from loguru import logger
@@ -22,7 +23,7 @@ from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_transport import TransportParams
-from pipecat.turns.user_stop.classifier_user_turn_stop_strategy import ClassifierUserTurnStopStrategy
+from pipecat.turns.user_stop.classifier_user_turn_stop_strategy import TURN_COMPLETION_QUESTION, ClassifierUserTurnStopStrategy
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
@@ -67,7 +68,20 @@ class Recognizer(Adapter):
         async def timing(_c, data) -> None:  # сколько думал классификатор: штатные метрики Pipecat
             log("turn.metrics", **{type(d).__name__: getattr(d.value, "model_dump", lambda: d.value)() for d in data})
 
+        self.warm = asyncio.create_task(self.keep_warm(classifier))
         return ClassifierUserTurnStopStrategy(classifier=classifier, classification_timeout=2.0)
+
+    async def keep_warm(self, classifier: BaseClassifier) -> None:
+        """Соединение с классификатором держим тёплым. Первое Pipecat открывает сам при запуске конвейера, а простаивающее
+        закрывает через 240 с — тогда первая пауза после перерыва ждала бы рукопожатия, 2–3 с. Раньше этого — пустой вопрос."""
+        while True:
+            await asyncio.sleep(200)
+            try:
+                t0 = time.monotonic()
+                await asyncio.wait_for(classifier.choice("привет", {"turn": TURN_COMPLETION_QUESTION}), 10)
+                log("turn.warm", s=round(time.monotonic() - t0, 2))
+            except Exception as ex:  # noqa: BLE001 — не прогрелось: первая пауза просто подождёт
+                log("turn.warm.error", error=f"{type(ex).__name__}: {ex}")
 
     def start(self) -> list:
         return [self.run()]

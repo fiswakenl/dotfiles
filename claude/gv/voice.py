@@ -241,8 +241,8 @@ async def watchdog() -> None:
             log("exit", why=f"плагин не пинговал {PING_LOST} с")
             os._exit(0)
         if any(not f.exists() or f.stat().st_mtime != stamp[f] for f in watched):
-            log("reload")
-            os.execv(sys.executable, [sys.executable, *sys.argv])
+            log("reload")  # через uv, а не тем же Python: правка зависимостей в шапке скрипта иначе не подхватится
+            os.execvp("uv", ["uv", "run", "-q", "--script", str(HERE / "voice.py")])
 
 
 async def main() -> None:
@@ -264,6 +264,8 @@ async def main() -> None:
     voice = adapters.make(VOICE, core)
     log("start", port=PORT, voice=VOICE, adapter=voice.title, pause_ms=voice.pause_ms, epoch=EPOCH)
     tasks = [asyncio.create_task(c) for c in (watchdog(), claude_steps(), *voice.start())]  # noqa: F841 — держим ссылки
+    for t in tasks:  # упавшая задача иначе молчит: голос не работает, а в журнале пусто
+        t.add_done_callback(lambda t: t.cancelled() or not t.exception() or log("task.error", error=f"{type(t.exception()).__name__}: {t.exception()}"))
     await asyncio.Event().wait()
 
 
