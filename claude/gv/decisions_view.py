@@ -116,12 +116,12 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
     return d
 
 
-PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x810">
+PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x880">
 <title>gv · decisions · __NAME__</title>
 <!-- обновить или взять другой отрезок: __COMMAND__ -->
 <style>
 *{box-sizing:border-box}html,body{margin:0;background:#fff;color:#111;font:15px/1.45 -apple-system,"Segoe UI",Roboto,sans-serif}
-.w{padding:18px 24px;--l:110px}.mono,#now>b{font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#6b7280}
+.w{padding:18px 24px;--l:110px}.mono{font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#6b7280}
 #tl{position:relative;margin-top:8px;cursor:crosshair}
 .row{position:relative;height:28px;margin-left:var(--l);border-bottom:1px solid #f3f4f6}.row.gap{height:8px;border:0}
 .row>b{position:absolute;left:calc(-1*var(--l));top:5px;width:calc(var(--l) - 12px);text-align:right;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#6b7280;font-weight:400}
@@ -138,26 +138,28 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 #axis{position:relative;height:22px;margin-left:var(--l);border-top:1px solid #9ca3af}
 #axis i{position:absolute;top:0;height:5px;border-left:1px solid #9ca3af}#axis span{position:absolute;top:5px;transform:translateX(-50%);white-space:nowrap}
 #cur{position:absolute;top:0;bottom:22px;width:0;border-left:1.5px solid #111;pointer-events:none;z-index:3}
-#now{margin-top:12px;display:grid;grid-template-columns:var(--l) 1fr 340px;align-items:baseline}
-#now>*{padding:4px 0;border-top:1px solid #f3f4f6}#now>.hd{border:0;padding:0 0 2px;font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:#9ca3af;text-transform:uppercase;letter-spacing:.04em}
-#now>b{font-weight:400;text-align:right;padding-right:12px}#now>.text{font-size:17px;min-height:33px}#now>.lgc{padding-left:16px;border-left:1px solid #f3f4f6;align-self:stretch}
+#cap{margin:12px 0 6px var(--l);display:flex;gap:14px;align-items:baseline}#cap b{font:13px ui-monospace,SFMono-Regular,Menlo,monospace}
+#cap .text{font-size:17px}
+#now{margin-left:var(--l);display:grid;grid-template-columns:1fr 1fr;gap:4px 18px}
+.tile{display:grid;grid-template-columns:40px 1fr;gap:0 8px;padding:5px 8px;border-radius:6px;border:1px solid #f3f4f6;min-height:48px}
+.tile.on{background:#fffbeb;border-color:#fcd34d}.tile i{position:relative;height:22px;margin-top:2px;font-style:normal}.tile u{text-decoration:none}
+.tile .nm{font-size:12.5px;color:#6b7280}.tile.on .nm{color:#b45309;font-weight:600}.tile .val{grid-column:2;font-size:13.5px;line-height:1.4}
+.tile .bar{left:0;top:2px}.tile .rh{top:5px;margin-left:0}.tile .tk{top:3px}.tile .tk.f{top:0}.tile .fz{top:5px}
+.tile .ln{position:absolute;top:0;height:22px;border-left:2px solid #dc2626}.tile .ln.old{border-left:2px dashed #9ca3af}
+.tile .wv{position:absolute;left:0;top:7px;width:34px;height:8px;background:repeating-linear-gradient(90deg,#1d4ed8 0 2px,#dbeafe 2px 4px)}
 .open{background:#bfdbfe;border-radius:2px;padding:1px 2px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
-.lgc{display:flex;flex-wrap:wrap;align-items:center;gap:2px 12px;font-size:12.5px;color:#6b7280;line-height:22px}
-.lgc span{display:inline-flex;align-items:center;gap:6px}.lgc i{position:relative;width:34px;height:22px;flex:none;font-style:normal}.lgc u{text-decoration:none}
-.lgc .bar{left:0;top:2px}.lgc .rh{top:5px;margin-left:0}.lgc .tk{top:3px}.lgc .tk.f{top:0}.lgc .fz{top:5px}
-.lgc .ln{position:absolute;top:0;height:22px;border-left:2px solid #dc2626}.lgc .ln.old{border-left:2px dashed #9ca3af}
-.lgc .wv{position:absolute;left:0;top:7px;width:34px;height:8px;background:repeating-linear-gradient(90deg,#1d4ed8 0 2px,#dbeafe 2px 4px)}
 .hit{filter:drop-shadow(0 0 2px #f59e0b) drop-shadow(0 0 5px #f59e0b);z-index:4}.vad.hit{filter:none;box-shadow:inset 0 0 0 2px #f59e0b}
-.v.hit{border-left-width:3px}.row.hot>b,#now>b.on{color:#b45309;font-weight:600}
-#log{margin:10px 0 0 var(--l);font:12.5px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;color:#374151;min-height:170px}
+.v.hit{border-left-width:3px}.row.hot>b{color:#b45309;font-weight:600}
+#log{margin:12px 0 0 var(--l);font:12.5px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;color:#374151;min-height:170px}
 #log .hd{color:#9ca3af;text-transform:uppercase;letter-spacing:.04em;font-size:11.5px}
 #log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#log .dt{display:inline-block;width:70px;text-align:right;color:#9ca3af;margin-right:12px}
 #log .who{display:inline-block;width:150px;color:#6b7280}#log .near{background:#fef3c7}#log .near .dt{color:#b45309}
-.dim{color:#9ca3af}.key{font-weight:600}.red{color:#dc2626;font-weight:600}.past{color:#6b7280}#now>b.t0{color:#111}
+.dim{color:#9ca3af}.key{font-weight:600}.red{color:#dc2626;font-weight:600}.past{color:#6b7280}#cap>b.t0{color:#111}
 </style>
 <div class="w">
 <div class="mono" id="head"></div>
 <div id="tl"></div>
+<div id="cap"></div>
 <div id="now"></div>
 <div id="log"></div>
 </div>
@@ -174,17 +176,6 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', 
 const outcome = c => c.kind === 'early' ? (c.yes ? `стоп №${c.last}` : 'ждём следующий кусок')
   : c.kind === 'done' ? (c.yes ? 'фраза закрыта' : 'ждём продолжения')
   : (c.yes ? `продолжение №${c.last}: откат и склейка` : 'новая мысль');
-const item = (glyph, text) => `<span><i>${glyph}</i>${text}</span>`, cell = (...items) => `<span class="lgc">${items.join('')}</span>`;
-const LEGEND = {
-  text: cell(item('<u class="open" style="position:absolute;top:0;font-size:12px">текст</u>', 'ещё открыт, может поменяться')),
-  you: cell(item('<u class="wv"></u>', 'громкость, фон — Silero слышит голос'),
-            item('<u class="rh" style="left:4px"></u><u class="rh y" style="left:20px"></u>', 'smart turn: нет · договорил')),
-  deepgram: cell(item('<u class="tk" style="left:10px"></u><u class="tk f" style="left:22px"></u>', 'кусок: открытый · закрытый'),
-                 item('<u class="fz" style="left:16px">▼</u>', 'наше «верни» по паузе')),
-  decisions: cell(item('<u class="bar no" style="width:14px"></u><u class="bar yes" style="left:18px;width:14px"></u>', 'нет · да; длина — сколько думал')),
-  claude: cell(item('<u class="bar cl" style="width:32px">№1</u>', 'работает над запросом'),
-               item('<u class="ln" style="left:8px"></u><u class="ln old" style="left:22px"></u>', 'стоп · где был бы откат')),
-};
 // Все события отрезка словами протокола: кто кому что прислал. Показываются рядом с курсором — понятно, что за чем пришло.
 const flag = c => `is_final=${c.final}` + (c.final ? `, speech_final=${c.pause}, from_finalize=${c.by_us}` : '');
 const EVENTS = [
@@ -198,7 +189,7 @@ const EVENTS = [
   ...D.cuts.map(c => [c.t, 'мы → плагин', `cancel №${c.id}: остановить ход Claude`]),
   ...D.asks.map(a => [a.t, 'мы → плагин', `${a.kind} №${a.id}` + (a.rewind ? `, rewind №${a.rewind}` : '') + ` «${a.text}»`]),
 ].sort((a, b) => a[0] - b[0]);
-const LOG_N = 9;  // строк в логе: ближайшие к курсору
+const LOG_N = 7;  // строк в логе: ближайшие к курсору
 
 let SCALE = 1;  // пикселей в секунде
 let NOW = D.cuts[0]?.t ?? D.chunks[0]?.t ?? D.from;  // момент под курсором; сначала — первый стоп
@@ -212,38 +203,77 @@ function draw() {
   // Звук: отрезки речи по Silero фоном, поверх — громкость микрофона зеркальной гистограммой.
   const L = D.level, bars = L ? L.v.map((v, i) => { const hh = Math.max(0.6, Math.sqrt(v / 100) * 24);
     return `<rect x="${x(L.from + i * L.step).toFixed(1)}" y="${(25 - hh).toFixed(1)}" width="${Math.max(1, L.step * S - 0.6).toFixed(1)}" height="${(hh * 2).toFixed(1)}"/>`; }).join('') : '';
-  let h = '<div class="row snd"><b>звук</b>' + D.speech.map(([a, b]) => `<div class="vad" ${at_('you', a, b)} style="left:${x(a)}px;width:${x(b) - x(a)}px"></div>`).join('') +
+  let h = '<div class="row snd"><b>звук</b>' + D.speech.map(([a, b]) => `<div class="vad" ${at_('vad', a, b)} style="left:${x(a)}px;width:${x(b) - x(a)}px"></div>`).join('') +
     `<svg width="${W}" height="50" fill="#1d4ed8">${bars}</svg></div>`;
   // Локальная модель конца реплики: вердикт на каждой паузе в звуке; закрашен — «договорил».
-  h += row('smart turn') + D.local.map(m => `<div class="rh ${m.yes ? 'y' : ''}" ${at_('you', m.t)} style="left:${x(m.t)}px"></div>`).join('') + '</div>';
+  h += row('smart turn') + D.local.map(m => `<div class="rh ${m.yes ? 'y' : ''}" ${at_('turn', m.t)} style="left:${x(m.t)}px"></div>`).join('') + '</div>';
   // Текст: отметка там, где кусок пришёл; толстая — закрытый. Сам текст — под шкалой, по курсору.
-  h += row('deepgram') + D.asks_dg.map(a => `<span class="fz" ${at_('deepgram', a.t)} style="left:${x(a.t)}px">▼</span>`).join('') +
-    D.chunks.map(c => `<div class="tk ${c.final ? 'f' : ''}" ${at_('deepgram', c.t)} style="left:${x(c.t)}px"></div>`).join('') + '</div><div class="row gap"></div>';
+  h += row('deepgram') + D.asks_dg.map(a => `<span class="fz" ${at_('fin', a.t)} style="left:${x(a.t)}px">▼</span>`).join('') +
+    D.chunks.map(c => `<div class="tk ${c.final ? 'f' : ''}" ${at_(c.final ? 'final' : 'open', c.t)} style="left:${x(c.t)}px"></div>`).join('') + '</div><div class="row gap"></div>';
   for (const kind of ['early', 'done', 'route'])
     h += row(NAME[kind]) + D.decisions.filter(c => c.kind === kind).map((c, i, all) =>
-      bar(c.t - c.d, c.t, c.yes ? 'yes' : 'no', '', span('decisions', c.t - c.d, c.t)) +
+      bar(c.t - c.d, c.t, c.yes ? 'yes' : 'no', '', span(c.kind, c.t - c.d, c.t)) +
       // вероятность справа от полосы; следующий вопрос слишком близко — слева, чтобы не закрыть его полосу
       (all[i + 1] && x(all[i + 1].t - all[i + 1].d) - x(c.t) < 44
         ? `<span class="lab ${c.yes ? 'y' : ''}" style="right:${W - x(c.t - c.d) + 4}px">${num(c.p)}</span>`
         : `<span class="lab ${c.yes ? 'y' : ''}" style="left:${x(c.t) + 4}px">${num(c.p)}</span>`)).join('') + '</div>';
   h += '<div class="row gap"></div>' + row('claude') + D.asks.map(a => {
     const cut = D.cuts.find(c => c.id === a.id), next = D.asks.find(n => n.rewind === a.id), end = Math.min(cut?.t ?? D.to, next?.t ?? D.to, D.to);
-    return bar(a.t, end, 'cl' + (a.kind === 'quick' ? ' q' : ''), `№${a.id}`, at_('claude', a.t)); }).join('') + '</div>';
+    return bar(a.t, end, 'cl' + (a.kind === 'quick' ? ' q' : ''), `№${a.id}`, at_('ask', a.t)); }).join('') + '</div>';
   const step = LEN > 40 ? 5 : LEN > 16 ? 2 : 1;
   let ax = '';
   for (let t = Math.ceil(T0 / step) * step; t <= D.to; t += step) ax += `<i style="left:${x(t)}px"></i><span class="mono" style="left:${x(t)}px">${clock(t).slice(3)}</span>`;
   h += `<div id="axis">${ax}</div>`;
   for (const c of D.cuts) {  // красная — ход остановлен; пунктир — откат, где он остановился бы без раннего вопроса
-    h += `<div class="v" ${at_('claude', c.t)} style="left:${LEFT + x(c.t)}px"></div>`;
+    h += `<div class="v" ${at_('cut', c.t)} style="left:${LEFT + x(c.t)}px"></div>`;
     const old = D.asks.find(a => a.rewind === c.id);
-    if (old) h += `<div class="v old" ${at_('claude', old.t)} style="left:${LEFT + x(old.t)}px"></div>`;
+    if (old) h += `<div class="v old" ${at_('cut', old.t)} style="left:${LEFT + x(old.t)}px"></div>`;
   }
   tl.innerHTML = h + '<div id="cur"></div>';
   tl.onmousemove = e => { const px = e.clientX - tl.getBoundingClientRect().left - LEFT; if (px >= 0 && px <= W) at(T0 + px / S); };
   at(NOW);
 }
 
-// Состояние на момент t, как на паузе: что уже собрано из текста и закрыто ли оно, говорит ли человек, чем занят Claude.
+// Состояние на момент t, как на паузе: над плитками — собранный текст (открытая часть выделена), под ними — по плитке на каждое
+// обозначение шкалы: значок, что это, и его последнее значение к этому моменту. Сработавшие рядом с курсором — подсвечены.
+const ago = at => dim(`${num(NOW - at)} с назад`);
+const lastOf = (list, t) => list.filter(e => (e.t ?? e) <= t).pop();
+const TILES = [
+  ['vad', '<u class="wv"></u>', 'звук · Silero VAD', t => {
+    const s = D.speech.find(([a, b]) => t >= a && t <= b), q = D.speech.filter(s => s[1] < t).pop(), v = D.level ? D.level.v[Math.round((t - D.level.from) / D.level.step)] : null;
+    return (s ? `голос идёт ${num(t - s[0], 1)} с ` + dim('· VADUserStartedSpeaking') : q ? `тишина ${num(t - q[1], 1)} с ` + dim('· VADUserStoppedSpeaking') : 'тишина') +
+      (v != null ? dim(` · громкость ${v}%`) : ''); }],
+  ['turn', '<u class="rh" style="left:4px"></u><u class="rh y" style="left:20px"></u>', 'Smart Turn · по интонации', t => {
+    const m = lastOf(D.local, t);
+    return m ? `EndOfTurnState.<b>${m.yes ? 'COMPLETE' : 'INCOMPLETE'}</b> ` + dim(`· ${m.yes ? 'договорил' : 'не договорил'} · `) + ago(m.t) : '—'; }],
+  ['open', '<u class="tk" style="left:16px"></u>', 'Deepgram → мы · открытый кусок', t => {
+    const c = lastOf(D.chunks.filter(c => !c.final), t);
+    return c ? `is_final=<b>false</b> «${esc(c.text)}» ` + ago(c.t) : '—'; }],
+  ['final', '<u class="tk f" style="left:16px"></u>', 'Deepgram → мы · закрытый кусок', t => {
+    const c = lastOf(D.chunks.filter(c => c.final), t);
+    return c ? `is_final=<b>true</b> speech_final=<b>${c.pause}</b> from_finalize=<b>${c.by_us}</b> «${esc(c.text)}» ` + ago(c.t) : '—'; }],
+  ['fin', '<u class="fz" style="left:12px">▼</u>', 'мы → Deepgram · Finalize («верни»)', t => {
+    const a = lastOf(D.asks_dg, t);
+    if (!a) return '—';
+    const got = D.chunks.find(c => c.final && c.t >= a.t && c.t <= t), rep = D.replies.find(r => r.t >= a.t && r.t <= t);
+    return `послали ${num(t - a.t)} с назад ` + dim('· по паузе Silero · ') +
+      (rep ? `ответ: «${esc(rep.text)}»` : got ? (got.by_us ? 'ответ пришёл с текстом' : 'Deepgram закрыл сам раньше ответа') : 'ждём ответ'); }],
+  ...['early', 'done', 'route'].map(kind => [kind, `<u class="bar no" style="width:14px"></u><u class="bar yes" style="left:18px;width:14px"></u>`,
+    `мы → Decisions · ${NAME[kind]} · «${ASK[kind]}»`, t => {
+      const going = D.decisions.find(c => c.kind === kind && c.t - c.d <= t && c.t > t), c = going ?? lastOf(D.decisions.filter(c => c.kind === kind), t);
+      if (!c) return '—';
+      return `по «${esc(c.text)}»` + (c.pause != null ? dim(`, пауза ${num(c.pause, 1)} с`) : '') +
+        (going ? ' · <b>думает</b>' : ` → p=<b>${num(c.p)}</b> ` + dim(`за ${num(c.d)} с · `) + `<span class="${c.yes ? 'key' : ''}">${outcome(c)}</span> ` + ago(c.t)); }]),
+  ['ask', '<u class="bar cl" style="width:32px">№1</u>', 'мы → плагин · запрос Claude', t => {
+    const a = lastOf(D.asks, t);
+    if (!a) return '—';
+    const cut = D.cuts.find(c => c.id === a.id && c.t <= t);
+    return `${a.kind} №${a.id}` + (a.rewind ? dim(`, rewind №${a.rewind}`) : '') + ` · <b>${cut ? 'остановлен' : 'работает'}</b> ` + ago(a.t); }],
+  ['cut', '<u class="ln" style="left:8px"></u><u class="ln old" style="left:22px"></u>', 'мы → плагин · cancel (стоп) · пунктир — где был бы откат', t => {
+    const c = lastOf(D.cuts, t);
+    return c ? `cancel №${c.id}${stopped(c)} · ` + ago(c.t) : '—'; }],
+];
+
 function at(t) {
   NOW = t;
   document.getElementById('cur').style.left = LEFT + (t - T0) * SCALE + 'px';
@@ -252,23 +282,10 @@ function at(t) {
   const phrase = D.phrases.find(p => t >= p.a && t <= p.b), last = D.phrases.filter(p => p.b < t).pop();
   const got = phrase ? D.chunks.filter(c => c.t >= phrase.a && c.t <= t) : [], tail = got[got.length - 1];
   const done = got.filter(c => c.final).map(c => c.text).join(' '), open = tail && !tail.final ? tail.text : '';
-  // Идущая фраза — в полную силу, открытая часть выделена; уже закрытая фраза — приглушённо.
   const text = phrase ? `${esc(done)} ${open ? `<span class="open">${esc(open)}</span>` : ''}`.trim() : last ? `<span class="past">${esc(last.text)}</span>` : '';
-  const speaking = D.speech.some(([a, b]) => t >= a && t <= b), quiet = D.speech.filter(s => s[1] < t).pop();
-  const turn = D.local.filter(m => m.t <= t).pop();
-  const ask = D.asks.filter(a => a.t <= t).pop(), cut = ask && D.cuts.find(c => c.id === ask.id && c.t <= t);
-  const call = D.decisions.filter(c => c.t <= t).pop(), going = D.decisions.find(c => c.t - c.d <= t && c.t > t), q = going ?? call;
-  // В каждой строке главное — в полную силу, подробности — приглушённо, решающее число — жирным.
-  const none = '<span class="dim">—</span>';
-  const k = name => hot.has(name) ? ' class="on"' : '';
-  document.getElementById('now').innerHTML = '<span class="hd"></span><span class="hd">под курсором</span><span class="hd lgc">обозначения</span>' +
-    `<b class="t0">${clock(t, true)}</b><span class="text">${text || none}</span>${LEGEND.text}` +
-    `<b${k('you')}>ты</b><span>${speaking ? 'говоришь' : quiet ? `молчишь ${num(t - quiet[1], 1)} с` : 'молчишь'}` +
-      (turn ? dim(` · smart turn ${num(t - turn.t, 1)} с назад: `) + (turn.yes ? 'договорил' : 'не договорил') : '') + `</span>${LEGEND.you}` +
-    `<b${k('deepgram')}>deepgram</b><span>${source(t)}</span>${LEGEND.deepgram}` +
-    `<b${k('decisions')}>decisions</b><span>${!q ? none : `${NAME[q.kind]} ` + dim(`«${ASK[q.kind]}» по «${esc(q.text)}»` + (q.pause != null ? `, пауза ${num(q.pause, 1)} с` : '')) +
-      (going ? dim(' · думает') : ` → <span class="key">${num(q.p)}</span> ` + dim(`за ${num(q.d)} с ·`) + ` <span class="${q.yes ? 'key' : ''}">${outcome(q)}</span>`)}</span>${LEGEND.decisions}` +
-    `<b${k('claude')}>claude</b><span>${!ask ? none : cut ? `№${ask.id} <span class="key">остановлен</span>${stopped(cut)}` : `№${ask.id} работает`}</span>${LEGEND.claude}`;
+  document.getElementById('cap').innerHTML = `<b class="t0">${clock(t, true)}</b><span class="text">${text || dim('—')}</span>`;
+  document.getElementById('now').innerHTML = TILES.map(([k, glyph, name, value]) =>
+    `<div class="tile ${hot.has(k) ? 'on' : ''}"><i>${glyph}</i><span class="nm">${name}</span><span class="val">${value(t)}</span></div>`).join('');
 }
 
 // Лог: LOG_N событий вокруг курсора; ближайшее к нему — выделено, время — относительно курсора.
@@ -291,20 +308,6 @@ function light(t) {
     if (hit) { hot.add(el.dataset.k); el.closest('.row')?.classList.add('hot'); }
   }
   return hot;
-}
-
-// Откуда последний кусок текста: открыт; закрыт нашим «верни» (и кто его послал); закрыт самим Deepgram — по его паузе или без неё.
-function source(t) {
-  const c = D.chunks.filter(k => k.t <= t).pop(), req = D.asks_dg.filter(a => a.t <= t).pop();
-  const waiting = req && (!c || c.t < req.t) && !D.replies.some(r => r.t >= req.t && r.t <= t);
-  if (waiting) return `«верни» отправлено ${num(t - req.t)} с назад` + dim(' · послал Silero: пауза в звуке · ждём ответ');
-  if (!c) return '<span class="dim">—</span>';
-  const ago = dim(` · ${num(t - c.t)} с назад`), sent = req && c.t - req.t < 1.5 ? req : null;
-  if (!c.final) return `«${esc(c.text)}» <span class="key">открыт</span>` + ago;
-  const head = `«${esc(c.text)}» <span class="key">закрыт</span> `;
-  if (c.by_us) return head + `нашим «верни»` + dim(` · его послал Silero: пауза ${sent ? num(c.t - sent.t) + ' с до этого' : ''}`) + ago;
-  return head + (c.pause ? 'самим Deepgram: услышал паузу' : 'самим Deepgram: слова устоялись, паузы не было') +
-    (sent ? dim(` · наше «верни» от Silero ушло на ${num(c.t - sent.t)} с раньше и опоздало`) : '') + ago;
 }
 
 // Сколько прошло от первого слова фразы до стопа и на сколько позже ход остановил бы откат.
