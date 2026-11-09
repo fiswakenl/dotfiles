@@ -96,8 +96,7 @@ class Core:
     def next(self) -> dict | None:
         """Что отдать плагину: реплики на решение — первыми, quick и поправки — сразу, новый ask — когда Claude свободен."""
         if self.utterances:
-            busy = self.working or any(r.kind == "ask" and r.state in ("queued", "sent") for r in self.reqs.values())
-            return {"kind": "route", "text": self.utterances.pop(0), "busy": busy,
+            return {"kind": "route", "text": self.utterances.pop(0), "busy": self.claude_busy(),
                     "recent": [{"id": r.id, "kind": r.kind, "state": r.state, "text": r.text, "answer": r.answer[:300]} for r in self.recent(10)]}
         for r in self.reqs.values():
             if r.state == "queued" and (r.kind == "quick" or r.rewind or (self.busy is None and not self.working)):
@@ -179,6 +178,10 @@ class Core:
             self.speech.append((id, text))
             self.hold = time.monotonic() + SAY_RETRY_S
             asyncio.get_running_loop().call_later(SAY_RETRY_S, self.pump)
+
+    def claude_busy(self) -> bool:
+        """Claude занят: идёт ход или ask ждёт отправки либо ответа."""
+        return bool(self.working) or any(r.kind == "ask" and r.state in ("queued", "sent") for r in self.reqs.values())
 
     def recent(self, n: int = 6) -> list[Req]:
         """Последние живые реплики — история для нового сокета Gemini: по ней она узнаёт, что можно поправить."""

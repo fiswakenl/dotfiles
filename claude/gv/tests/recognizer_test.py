@@ -74,8 +74,15 @@ class Core:
     def __init__(self) -> None:
         self.utterances: list[str] = []
 
-    def utter(self, text: str) -> None:
-        self.utterances.append(text)
+    def recent(self, n: int = 6) -> list:
+        return []  # прошлых запросов нет: маршрут — новая мысль без вызова классификатора
+
+    def claude_busy(self) -> bool:
+        return False
+
+    def call(self, name: str, args: dict) -> str:
+        self.utterances.append(args["heard"])
+        return ""
 
 
 class NoMic:

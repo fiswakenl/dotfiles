@@ -29,7 +29,7 @@ from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
-from adapters import Adapter
+from adapters import Adapter, router
 from journal import emit, log
 
 RATE = 16000
@@ -62,7 +62,7 @@ class Recognizer(Adapter):
         """Второе мнение о конце реплики — по тексту: Smart Turn слышит интонацию, классификатор читает, закончена ли мысль.
         Реплика кончается, когда согласны оба (штатный режим Pipecat); «не договорил» — ждёт продолжения, заговорил — ожидание
         сбрасывается. Классификатор не ответил вовремя — решает один Smart Turn."""
-        classifier = self.classifier()
+        classifier = self.decisions
 
         @classifier.event_handler("on_metrics")
         async def timing(_c, data) -> None:  # сколько думал классификатор: штатные метрики Pipecat
@@ -87,6 +87,9 @@ class Recognizer(Adapter):
         return [self.run()]
 
     async def run(self) -> None:
+        self.decisions = self.classifier()  # один на конец реплики и на маршрут: одно тёплое соединение
+        self.order = asyncio.Lock()
+        self.delivering: set[asyncio.Task] = set()
         pause = self.pause_ms / 1000
         turn = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=pause)))
         pipeline = Pipeline([self.mic, VADProcessor(vad_analyzer=SileroVADAnalyzer()), self.stt(),
@@ -104,13 +107,21 @@ class Recognizer(Adapter):
         self.error("конвейер распознавания остановился")
 
     def heard(self, text: str) -> None:
-        """Реплика закончена: распознанный текст — в ядро."""
+        """Реплика закончена: распознанный текст — на решение, куда его отправить."""
         log("recognized", adapter=self.title, text=text)
         if text:
             emit({"me": text})
-            self.core.utter(text)
+            task = asyncio.create_task(self.deliver(text))
+            self.delivering.add(task)
+            task.add_done_callback(self.delivering.discard)
         else:
             emit({"state": "ничего не распознано"})
+
+    async def deliver(self, text: str) -> None:
+        """Решение классификатора — в ядро, по одной реплике в порядке речи: следующая видит, куда ушла прошлая."""
+        async with self.order:
+            d = await router.decide(self.decisions, self.core, text)
+            self.core.call(d.name, {"heard": text, "replaces": d.replaces, "sure": True})
 
     def error(self, why: str) -> None:
         why = f"{self.title}: {why}"
