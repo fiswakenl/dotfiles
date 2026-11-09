@@ -116,7 +116,7 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
     return d
 
 
-PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x600">
+PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x810">
 <title>gv · decisions · __NAME__</title>
 <!-- обновить или взять другой отрезок: __COMMAND__ -->
 <style>
@@ -149,12 +149,17 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 .lgc .wv{position:absolute;left:0;top:7px;width:34px;height:8px;background:repeating-linear-gradient(90deg,#1d4ed8 0 2px,#dbeafe 2px 4px)}
 .hit{filter:drop-shadow(0 0 2px #f59e0b) drop-shadow(0 0 5px #f59e0b);z-index:4}.vad.hit{filter:none;box-shadow:inset 0 0 0 2px #f59e0b}
 .v.hit{border-left-width:3px}.row.hot>b,#now>b.on{color:#b45309;font-weight:600}
+#log{margin:10px 0 0 var(--l);font:12.5px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;color:#374151;min-height:170px}
+#log .hd{color:#9ca3af;text-transform:uppercase;letter-spacing:.04em;font-size:11.5px}
+#log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}#log .dt{display:inline-block;width:70px;text-align:right;color:#9ca3af;margin-right:12px}
+#log .who{display:inline-block;width:150px;color:#6b7280}#log .near{background:#fef3c7}#log .near .dt{color:#b45309}
 .dim{color:#9ca3af}.key{font-weight:600}.red{color:#dc2626;font-weight:600}.past{color:#6b7280}#now>b.t0{color:#111}
 </style>
 <div class="w">
 <div class="mono" id="head"></div>
 <div id="tl"></div>
 <div id="now"></div>
+<div id="log"></div>
 </div>
 <script type="application/json" id="data">__DATA__</script>
 <script>
@@ -180,6 +185,21 @@ const LEGEND = {
   claude: cell(item('<u class="bar cl" style="width:32px">№1</u>', 'работает над запросом'),
                item('<u class="ln" style="left:8px"></u><u class="ln old" style="left:22px"></u>', 'стоп · где был бы откат')),
 };
+// Все события отрезка словами протокола: кто кому что прислал. Показываются рядом с курсором — понятно, что за чем пришло.
+const flag = c => `is_final=${c.final}` + (c.final ? `, speech_final=${c.pause}, from_finalize=${c.by_us}` : '');
+const EVENTS = [
+  ...D.speech.flatMap(([a, b]) => [[a, 'Silero', 'голос начался · VADUserStartedSpeaking'], [b, 'Silero', 'тишина → голос кончился · VADUserStoppedSpeaking']]),
+  ...D.asks_dg.map(a => [a.t, 'мы → Deepgram', 'Finalize («верни»)' + (a.derived ? ' · по коду Pipecat, в записи не было' : '')]),
+  ...D.replies.map(r => [r.t, 'Deepgram → мы', `ответ на Finalize, from_finalize=true «${r.text}»`]),
+  ...D.chunks.map(c => [c.t, 'Deepgram → мы', `Results ${flag(c)} «${c.text}»`]),
+  ...D.local.map(m => [m.t, 'Smart Turn', `EndOfTurnState.${m.yes ? 'COMPLETE' : 'INCOMPLETE'} · по интонации ${m.yes ? 'договорил' : 'не договорил'}`]),
+  ...D.decisions.flatMap(c => [[c.t - c.d, 'мы → Decisions', `${NAME[c.kind]}: «${ASK[c.kind]}» по «${c.text}»`],
+                               [c.t, 'Decisions → мы', `p=${num(c.p)} за ${num(c.d)} с → ${outcome(c)}`]]),
+  ...D.cuts.map(c => [c.t, 'мы → плагин', `cancel №${c.id}: остановить ход Claude`]),
+  ...D.asks.map(a => [a.t, 'мы → плагин', `${a.kind} №${a.id}` + (a.rewind ? `, rewind №${a.rewind}` : '') + ` «${a.text}»`]),
+].sort((a, b) => a[0] - b[0]);
+const LOG_N = 9;  // строк в логе: ближайшие к курсору
+
 let SCALE = 1;  // пикселей в секунде
 let NOW = D.cuts[0]?.t ?? D.chunks[0]?.t ?? D.from;  // момент под курсором; сначала — первый стоп
 
@@ -228,6 +248,7 @@ function at(t) {
   NOW = t;
   document.getElementById('cur').style.left = LEFT + (t - T0) * SCALE + 'px';
   const hot = light(t);
+  log(t);
   const phrase = D.phrases.find(p => t >= p.a && t <= p.b), last = D.phrases.filter(p => p.b < t).pop();
   const got = phrase ? D.chunks.filter(c => c.t >= phrase.a && c.t <= t) : [], tail = got[got.length - 1];
   const done = got.filter(c => c.final).map(c => c.text).join(' '), open = tail && !tail.final ? tail.text : '';
@@ -248,6 +269,14 @@ function at(t) {
     `<b${k('decisions')}>decisions</b><span>${!q ? none : `${NAME[q.kind]} ` + dim(`«${ASK[q.kind]}» по «${esc(q.text)}»` + (q.pause != null ? `, пауза ${num(q.pause, 1)} с` : '')) +
       (going ? dim(' · думает') : ` → <span class="key">${num(q.p)}</span> ` + dim(`за ${num(q.d)} с ·`) + ` <span class="${q.yes ? 'key' : ''}">${outcome(q)}</span>`)}</span>${LEGEND.decisions}` +
     `<b${k('claude')}>claude</b><span>${!ask ? none : cut ? `№${ask.id} <span class="key">остановлен</span>${stopped(cut)}` : `№${ask.id} работает`}</span>${LEGEND.claude}`;
+}
+
+// Лог: LOG_N событий вокруг курсора; ближайшее к нему — выделено, время — относительно курсора.
+function log(t) {
+  const i = EVENTS.reduce((best, e, j) => Math.abs(e[0] - t) < Math.abs(EVENTS[best][0] - t) ? j : best, 0);
+  const from = Math.max(0, Math.min(i - (LOG_N >> 1), EVENTS.length - LOG_N));
+  document.getElementById('log').innerHTML = '<div class="hd">события рядом с курсором</div>' + EVENTS.slice(from, from + LOG_N).map(([at, who, what], j) =>
+    `<div class="${from + j === i ? 'near' : ''}"><span class="dt">${at - t >= 0 ? '+' : '−'}${num(Math.abs(at - t))} с</span><span class="who">${who}</span>${esc(what)}</div>`).join('');
 }
 
 // Подсветить отметки, сработавшие рядом с t (в пределах HIT_PX пикселей при текущем масштабе), и их дорожки; вернуть их строки панели.
