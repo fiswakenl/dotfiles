@@ -153,7 +153,7 @@ async function poll($, options): Promise<void> {
       await deliver($, item);
     } catch (error) {
       await answer($, item.id, { error: String(error) });
-      $.ui.status(`gv: ${String(error)}`);
+      $.ui.status(String(error));
     }
   }
 }
@@ -175,9 +175,9 @@ async function turnOn($, options): Promise<void> {
   let up = false;
   for (let attempt = 0; attempt < TRIES && !up && running; attempt++) up = await launch($, options);
   if (!running) return;
-  if (!up) return void $.ui.status("gv: сервис не поднялся");
+  if (!up) return void $.ui.status("сервис не поднялся");
   if (options.open === "on" && (await $.env.get("GV_TEXT_ONLY")) !== "1") void $.process.run(["open", BASE]).catch(() => {});
-  else $.ui.status(`gv: ${BASE}`);
+  else $.ui.status(BASE);
 }
 
 // Выключить: цикл стоит, сервис и сокет Gemini закрыты, выключенность запомнена.
@@ -185,7 +185,7 @@ async function turnOff($): Promise<void> {
   running = false;
   await $.fs.write(await stateFile($), "off").catch(() => {});
   await post($, "/quit").catch(() => {});
-  $.ui.status("gv: выключен, /gv включает");
+  $.ui.status("выключен · /gv");
 }
 
 export function register(on, options) {
@@ -198,7 +198,7 @@ export function register(on, options) {
     await $.command.register({ name: "gv", description: "Включить или выключить голос (сервис Gemini и сокеты)" });
     $.clock.every(PING_MS, () => void post($, "/ping").catch(() => {})); // пока идёт пинг, сервис живёт
     const off = String(await $.fs.read(await stateFile($)).catch(() => "")).trim() === "off";
-    if (off) $.ui.status("gv: выключен, /gv включает");
+    if (off) $.ui.status("выключен · /gv");
     else void turnOn($, options);
     return result;
   });
