@@ -28,6 +28,7 @@ let started = false;
 let running = false; // голос включён в этом экземпляре плагина
 let healing = false;
 let current = 0; // запрос, над которым идёт голосовой ход; 0 — ход не голосовой
+let mainBusy = false; // идёт любой ход основного Claude — и голосовой, и набранный руками
 let lastVoice = 0; // последний отвеченный голосовой запрос: ход без новой реплики (итог фоновой задачи) — его продолжение
 const voiceMessages = new Map<number, string>(); // номер запроса → UUID его сообщения в истории Claude
 const queued = new Map<string, number>(); // текст сообщения, вставшего в очередь Claude, → номер запроса
@@ -139,6 +140,8 @@ async function deliver($, r: { id: number; text: string; rewind: number | null }
   const text = `${MARK} ${r.text}`;
   const target = r.rewind ? voiceMessages.get(r.rewind) : undefined;
   if (r.rewind && !target) throw new Error(`сообщение запроса №${r.rewind} не найдено в истории`);
+  // Новое сообщение — только в свободное окно: посреди чужого хода поле ввода его теряет. Поправка откатывает ход сама.
+  while (mainBusy && !target) await sleep(300);
   current = 0; // завершение отменяемого хода не выдаём за ответ
   const result = await bridge($, target ? "rewind" : "send", target ? { target, text } : { text });
   for (const [id, uuid] of voiceMessages) if (result.removed?.includes(uuid)) voiceMessages.delete(id);
@@ -288,6 +291,7 @@ export function register(on, options) {
   // набранное руками обрывает цепочку.
   on("turn.start", async ($, e, next) => {
     if (e.agentId) return next(e);
+    mainBusy = true;
     const waiting = queued.get(e.text);
     if (waiting) { // дошла очередь до сообщения, что ждало: теперь это голосовой ход, а UUID — из истории
       queued.delete(e.text);
@@ -319,7 +323,9 @@ export function register(on, options) {
 
   // Голосовой ход кончился — ответ сервису (пустой, если ответа нет: Claude всё равно свободен). Побочные ходы (агенты) не трогаем.
   on("turn.complete", async ($, e, next) => {
-    if (e.agentId || !current) return next(e);
+    if (e.agentId) return next(e);
+    mainBusy = false;
+    if (!current) return next(e);
     const id = current;
     current = 0;
     lastVoice = id;
