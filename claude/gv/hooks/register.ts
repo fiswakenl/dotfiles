@@ -207,8 +207,7 @@ async function turnOn($, options): Promise<void> {
   for (let attempt = 0; attempt < TRIES && !up && running; attempt++) up = await launch($, options);
   if (!running) return;
   if (!up) return void $.ui.status("сервис не поднялся");
-  if (options.open === "on" && (await $.env.get("GV_TEXT_ONLY")) !== "1") void $.process.run(["open", BASE]).catch(() => {});
-  else $.ui.status(`${ADAPTERS[voiceOf(options)]} · ${BASE}`);
+  $.ui.status(`${ADAPTERS[voiceOf(options)]} · ${BASE}`); // страница журнала — по адресу из статуса, сама не открывается
 }
 
 // Выключить: цикл стоит, сервис и сокеты закрыты, выключенность запомнена.
