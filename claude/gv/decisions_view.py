@@ -110,7 +110,7 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
     return d
 
 
-PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x470">
+PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="frame" content="1180x540">
 <title>gv · decisions · __NAME__</title>
 <!-- обновить или взять другой отрезок: __COMMAND__ -->
 <style>
@@ -134,12 +134,25 @@ PAGE = r"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="w
 #now{margin-top:10px;display:grid;grid-template-columns:var(--l) 1fr;gap:3px 0;align-items:baseline}
 #now>b{font-weight:400;text-align:right;padding-right:12px}#now>.text{font-size:17px;min-height:25px}
 .open{background:#bfdbfe;border-radius:2px;padding:1px 2px;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.lg{display:flex;flex-wrap:wrap;gap:4px 22px;margin:14px 0 0 var(--l);padding-top:10px;border-top:1px solid #f3f4f6;font-size:12.5px;color:#6b7280}
+.lg span{display:flex;align-items:center;gap:7px}.lg i{position:relative;width:38px;height:22px;flex:none;font-style:normal}.lg u{text-decoration:none}
+.lg .bar{left:0;top:2px}.lg .rh{top:5px;margin-left:0}.lg .ln{position:absolute;top:0;height:22px;border-left:2px solid #dc2626}.lg .ln.old{border-left:2px dashed #9ca3af}
+.lg .wv{position:absolute;left:2px;top:7px;width:34px;height:8px;background:repeating-linear-gradient(90deg,#1d4ed8 0 2px,#dbeafe 2px 4px)}
 .dim{color:#9ca3af}.key{font-weight:600}.red{color:#dc2626;font-weight:600}.past{color:#6b7280}#now>b:first-child{color:#111}
 </style>
 <div class="w">
 <div class="mono" id="head"></div>
 <div id="tl"></div>
 <div id="now"></div>
+<div class="lg">
+ <span><i><u class="wv"></u></i>громкость; фон — Silero слышит голос</span>
+ <span><i><u class="rh" style="left:6px"></u><u class="rh y" style="left:24px"></u></i>smart turn: не договорил · договорил</span>
+ <span><i><u class="tk" style="left:10px;top:3px"></u><u class="tk f" style="left:22px;top:0"></u></i>кусок текста: открытый · закрытый</span>
+ <span><i><u class="bar no" style="width:16px"></u><u class="bar yes" style="left:20px;width:16px"></u></i>вопрос к Decisions: нет · да; длина — сколько думал, число — вероятность</span>
+ <span><i><u class="bar cl" style="width:36px">№1</u></i>Claude работает над запросом</span>
+ <span><i><u class="ln" style="left:10px"></u><u class="ln old" style="left:24px"></u></i>стоп · откат, который был бы без него</span>
+ <span><i><u class="open" style="position:absolute;left:0;top:2px;font-size:12px">текст</u></i>в строке под шкалой: ещё открыт</span>
+</div>
 </div>
 <script type="application/json" id="data">__DATA__</script>
 <script>
