@@ -64,14 +64,14 @@ class Recognizer(Adapter):
         """Второе мнение о конце реплики — по тексту: Smart Turn слышит интонацию, классификатор читает, закончена ли мысль.
         Реплика кончается, когда согласны оба (штатный режим Pipecat); «не договорил» — ждёт продолжения, заговорил — ожидание
         сбрасывается. Классификатор не ответил вовремя — решает один Smart Turn."""
-        classifier = self.decisions
+        return ClassifierUserTurnStopStrategy(classifier=self.decisions, classification_timeout=2.0)
 
-        @classifier.event_handler("on_metrics")
-        async def timing(_c, data) -> None:  # сколько думал классификатор: штатные метрики Pipecat
-            log("turn.metrics", **{type(d).__name__: getattr(d.value, "model_dump", lambda: d.value)() for d in data})
-
-        self.warm = asyncio.create_task(self.keep_warm(classifier))
-        return ClassifierUserTurnStopStrategy(classifier=classifier, classification_timeout=2.0)
+    def processors(self) -> list:
+        """Конвейер после микрофона: Silero режет речь на отрезки, распознавание, конец реплики — Smart Turn и классификатор."""
+        pause = self.pause_ms / 1000
+        turn = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=pause)))
+        return [VADProcessor(vad_analyzer=SileroVADAnalyzer()), self.stt(),
+                Utterances(self, UserTurnStrategies(stop=[turn, self.completion()]), stop_timeout=pause + 2)]
 
     async def keep_warm(self, classifier: BaseClassifier) -> None:
         """Соединение с классификатором держим тёплым. Первое Pipecat открывает сам при запуске конвейера, а простаивающее
@@ -95,10 +95,13 @@ class Recognizer(Adapter):
         self.partial = self.asked = ""  # что уже слышно в идущей фразе; по какому её началу уже спросили классификатор
         self.settled = False  # ход Claude этой фразой уже остановлен
         self.checking: asyncio.Task | None = None
-        pause = self.pause_ms / 1000
-        turn = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=pause)))
-        pipeline = Pipeline([self.mic, VADProcessor(vad_analyzer=SileroVADAnalyzer()), self.stt(),
-                             Utterances(self, UserTurnStrategies(stop=[turn, self.completion()]), stop_timeout=pause + 2)])
+
+        @self.decisions.event_handler("on_metrics")
+        async def timing(_c, data) -> None:  # сколько думал классификатор: штатные метрики Pipecat
+            log("turn.metrics", **{type(d).__name__: getattr(d.value, "model_dump", lambda: d.value)() for d in data})
+
+        self.warm = asyncio.create_task(self.keep_warm(self.decisions))
+        pipeline = Pipeline([self.mic, *self.processors()])
         record = trace_open()
         worker = PipelineWorker(pipeline, idle_timeout_secs=None, enable_rtvi=False, enable_turn_tracking=False,
                                 observers=[Trace(record.with_suffix(".wav"))])

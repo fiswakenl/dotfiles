@@ -106,6 +106,7 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
             d["speech"].append([began, ts])
             began = None
         elif ev in ("stt.interim", "stt.final"):
+            heard = heard or ts  # без Silero начало фразы — первый кусок текста
             d["chunks"].append({"t": ts, "text": text, "final": ev == "stt.final", "by_us": bool(r.get("finalized")), "pause": bool(r.get("speech_final"))})
         elif ev == "dg.finalize":
             d["asks_dg"].append({"t": ts, "why": r.get("why", "")})
@@ -124,6 +125,8 @@ def collect(rows: list[dict], a: float, b: float) -> dict:
         elif ev == "route.early":
             d["decisions"].append({"kind": "early", "t": ts, "d": r["s"], "p": r["p"], "text": text, "last": r["last"],
                                    "yes": bool(after(rows, i, "cut", id=r["last"]))})
+        elif ev == "turn.check":  # конвейер Deepgram: вопрос «мысль закончена?» по speech_final
+            d["decisions"].append({"kind": "done", "t": ts, "d": r["s"], "p": r["p"], "text": text, "yes": bool(after(rows, i, "recognized"))})
         elif ev == "turn" and (m := VERDICT.search(text)) and "Classifier" in text:
             took = after(rows, i, "turn.metrics") or {}
             d["decisions"].append({"kind": "done", "t": ts, "d": took.get("ProcessingMetricsData", 0.2), "p": float(m[2]), "text": m[3], "yes": bool(after(rows, i, "recognized"))})
@@ -238,7 +241,7 @@ function draw() {
   let h = '<div class="row snd"><b>звук</b>' + D.speech.map(([a, b]) => `<div class="vad" ${at_('vad', a, b)} style="left:${x(a)}px;width:${x(b) - x(a)}px"></div>`).join('') +
     `<svg width="${W}" height="50" fill="#1d4ed8">${bars}</svg></div>`;
   // Локальная модель конца реплики: вердикт на каждой паузе в звуке; закрашен — «договорил».
-  h += row('smart turn') + D.local.map(m => `<div class="rh ${m.yes ? 'y' : ''}" ${at_('turn', m.t)} style="left:${x(m.t)}px"></div>`).join('') + '</div>';
+  if (D.local.length) h += row('smart turn') + D.local.map(m => `<div class="rh ${m.yes ? 'y' : ''}" ${at_('turn', m.t)} style="left:${x(m.t)}px"></div>`).join('') + '</div>';
   // Текст: отметка там, где кусок пришёл; толстая — закрытый. Сам текст — под шкалой, по курсору.
   h += row('deepgram') + D.asks_dg.map(a => `<span class="fz" ${at_('fin', a.t)} style="left:${x(a.t)}px">▼</span>`).join('') +
     D.dg_speech.map(e => `<span class="dgs" ${at_('dgs', e.t)} style="left:${x(e.t)}px;top:16px">▲</span>`).join('') +
@@ -275,8 +278,9 @@ function draw() {
 const lastOf = (list, t) => list.filter(e => (e.t ?? e) <= t).pop();
 // [ключ отметки, значок, имя, t → [значение, момент события или null]]
 const TILES = [
-  ['vad', '<u class="wv"></u>', 'Silero', t => {
+  ['vad', '<u class="wv"></u>', D.speech.length ? 'Silero' : 'звук', t => {
     const s = D.speech.find(([a, b]) => t >= a && t <= b), q = D.speech.filter(s => s[1] < t).pop(), v = D.level ? D.level.v[Math.round((t - D.level.from) / D.level.step)] : null;
+    if (!D.speech.length) return [v != null ? `громкость ${v}%` : '—', null];
     return [(s ? '<b>голос</b>' : 'тишина') + (v != null ? dim(` · ${v}%`) : ''), s ? s[0] : q ? q[1] : null]; }],
   ['turn', '<u class="rh" style="left:4px"></u><u class="rh y" style="left:20px"></u>', 'Smart Turn', t => {
     const m = lastOf(D.local, t);
@@ -310,6 +314,9 @@ const TILES = [
     const c = lastOf(D.cuts, t);
     return c ? [`№${c.id}${stopped(c)}`, c.t] : ['—', null]; }],
 ];
+// Чего в записи нет вовсе — того нет и в легенде (например, Silero, Smart Turn и Finalize у конвейера Deepgram).
+const EMPTY = new Set([!D.local.length && 'turn', !D.asks_dg.length && 'fin', !D.dg_speech.length && 'dgs', !D.dg_end.length && 'dge'].filter(Boolean));
+
 // Подсказка при наведении на строку легенды: что значит обозначение.
 const ABOUT = {vad: 'Silero VAD: голос или тишина; громкость микрофона', turn: 'Smart Turn: договорил ли по интонации (EndOfTurnState)',
   open: 'Deepgram → мы: открытый кусок, is_final=false, слова ещё поменяются', final: 'Deepgram → мы: закрытый кусок, is_final=true; speech_final — сам услышал паузу; from_finalize — ответ на наш Finalize',
@@ -329,7 +336,7 @@ function at(t) {
   const done = got.filter(c => c.final).map(c => c.text).join(' '), open = tail && !tail.final ? tail.text : '';
   const text = phrase ? `${esc(done)} ${open ? `<span class="open">${esc(open)}</span>` : ''}`.trim() : last ? `<span class="past">${esc(last.text)}</span>` : '';
   document.getElementById('cap').innerHTML = `<b class="t0">${clock(t, true)}</b><span class="text">${text || dim('—')}</span>`;
-  document.getElementById('now').innerHTML = TILES.map(([k, glyph, name, value]) => {
+  document.getElementById('now').innerHTML = TILES.filter(([k]) => !EMPTY.has(k)).map(([k, glyph, name, value]) => {
     const [v, when] = value(t);
     return `<div class="tile ${hot.has(k) ? 'on' : ''}" title="${esc(ABOUT[k])}"><i>${glyph}</i><span class="nm">${name}</span>` +
       `<span class="val">${v}</span><span class="ago">${when == null ? '' : '−' + num(t - when) + ' с'}</span></div>`; }).join('');
