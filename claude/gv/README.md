@@ -17,12 +17,12 @@
 ```zsh
 ccg            # Claude с GV и мостом отката (функция в ~/.config/zsh/20-projects.zsh)
 /gv            # включить или выключить голос; состояние — ~/.claude/gv.state
-/gv deepgram   # сменить адаптер на лету; то же — строка «Голосовой адаптер» в /config
+/gv deepgram   # сменить адаптер на лету; выбор запоминается в ~/.claude/gv.voice
 ```
 
 `ccg` = `--plugin-dir ~/.claude/gv` + `BUN_OPTIONS=--preload=…/preload.mjs`. Preload нужен мосту: штатный API плагина не даёт откатить историю.
 
-Адаптер — настройка `voice` плагина: запоминается в настройках Claude Code, её смена перезагружает плагин, и он поднимает сервис с новым адаптером; сессия остаётся.
+Адаптер по умолчанию — настройка `voice` плагина («Голосовой адаптер» в `/config`); `/gv <имя>` выбирает поверх неё, запоминает в `~/.claude/gv.voice` и сразу перезапускает сервис, сессия остаётся.
 
 Ключи: Gemini — `~/.config/gemini.env` (только через прокси из этого файла), Deepgram — `~/.config/deepgram.env`, OpenAI — `~/.config/openai.env` (через `OPENAI_PROXY` или `HTTPS_PROXY`).
 

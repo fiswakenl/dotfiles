@@ -35,7 +35,9 @@ const quickRows = atom({ plugin: "gv", key: "quickRows" } as const, {} as Record
 const quickOpen = atom({ plugin: "gv", key: "quickOpen" } as const, [] as number[]);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const voiceOf = (options): string => (String(options.voice) in ADAPTERS ? String(options.voice) : "gemini");
+let chosen = ""; // адаптер, выбранный командой /gv <имя> (~/.claude/gv.voice); пусто — из настройки voice
+const voiceOf = (options): string => [chosen, String(options.voice)].find((v) => v in ADAPTERS) ?? "gemini";
+const voiceFile = async ($): Promise<string> => `${await $.env.get("HOME")}/.claude/gv.voice`;
 
 // ── сервис ────────────────────────────────────────────────────────────────────
 
@@ -217,16 +219,14 @@ async function turnOff($): Promise<void> {
 // Другой адаптер — это настройка voice плагина, та же строка, что в /config: выбор запомнен в настройках, а её смена
 // перезагружает плагин, и новый экземпляр поднимает сервис с новым адаптером. Выбрать адаптер — заодно включить голос.
 async function choose($, options, name: string): Promise<string> {
+  const same = voiceOf(options) === name;
+  chosen = name;
+  await $.fs.write(await voiceFile($), name).catch(() => {});
   await $.fs.write(await stateFile($), "on").catch(() => {});
-  if (voiceOf(options) === name) {
-    if (running) return `gv: уже ${ADAPTERS[name]}.`;
-    void turnOn($, options);
-    return `gv включается: ${ADAPTERS[name]}.`;
-  }
-  const row = (await $.config.list()).find((r) => r.provider.plugin === $.plugin.name && r.key.endsWith(".voice"));
-  if (!row) return "gv: настройка voice не найдена в /config.";
-  const { deny } = await $.config.set({ key: row.key, value: name });
-  return deny ? `gv: не переключился: ${deny}` : `gv: ${ADAPTERS[name]} — плагин перезагрузится и поднимет сервис заново.`;
+  if (!running) return void turnOn($, options), `gv включается: ${ADAPTERS[name]}.`;
+  if (same) return `уже ${ADAPTERS[name]}.`;
+  void launch($, options).then((up) => $.ui.status(up ? `${ADAPTERS[name]} · ${BASE}` : "сервис не поднялся"));
+  return `${ADAPTERS[name]}: сервис перезапускается.`;
 }
 
 // ── правила голосовых сообщений для Claude ────────────────────────────────────
@@ -244,6 +244,7 @@ export function register(on, options) {
     started = true;
     PORT = Number(await $.env.get("GV_PORT")) || 8790;
     BASE = `http://127.0.0.1:${PORT}`;
+    chosen = String(await $.fs.read(await voiceFile($)).catch(() => "")).trim();
     await $.command.register({
       name: "gv",
       description: `Голос: без имени — включить или выключить; с именем — сменить адаптер (${Object.keys(ADAPTERS).join(", ")})`,
