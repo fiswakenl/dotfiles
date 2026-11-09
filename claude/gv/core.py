@@ -30,6 +30,7 @@ class Req:
     rewind: int | None = None  # номер запроса, до которого откатить историю Claude перед отправкой
     state: str = "queued"  # queued → sent → answered; superseded — заменён поправкой; failed — не дошёл
     by: int | None = None  # чем заменён
+    answer: str = ""  # что ответил Claude (для истории нового сокета Gemini)
     at: float = field(default_factory=time.monotonic)
 
 
@@ -97,6 +98,7 @@ class Core:
             self.emit({"error": f"Запрос №{id} не дошёл: {error}", "id": id})
             self.speech.append((id, f"[Запрос №{id} не дошёл до Claude: {error}] Скажи человеку одной фразой, что не получилось."))
         else:
+            r.answer = f"{r.answer}\n{text}".strip()
             self.emit({"answer": text, "id": id})
             if text:
                 self.speech.append((id, f"[{HEADER[r.kind].format(id=id)}] {text}\n\n{READ_ALOUD}"))
@@ -127,6 +129,14 @@ class Core:
         self.turn = time.monotonic()
         self.emit({"say": id})
         asyncio.get_running_loop().create_task(self.say(text))
+
+    def recent(self, n: int = 6) -> list[Req]:
+        """Последние живые реплики — история для нового сокета Gemini: по ней она узнаёт, что можно поправить."""
+        return [r for r in self.reqs.values() if r.state in ("queued", "sent", "answered")][-n:]
+
+    def quiet(self) -> bool:
+        """Голосовой канал свободен: никто не говорит, нечего сказать, Gemini не в ходе."""
+        return not self.listening and not self.speech and self.turn is None
 
     def idle(self) -> bool:
         """Ничего не ждём: ни запросов, ни ответов, ни речи."""

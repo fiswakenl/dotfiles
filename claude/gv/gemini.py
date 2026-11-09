@@ -18,6 +18,7 @@ HERE = Path(__file__).resolve().parent
 GEMINI_WS = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 MODEL = "models/gemini-3.8-live"
 LOUD = 500  # уровень (RMS int16), с которого блок звука считается речью
+IDLE_S = 30  # столько тишины — и сокет закрываем: открытый копит память разговора и закрывается Google сам
 PRE = 3  # блоков по 100 мс предыстории перед речью
 SILENCE_MARK = re.compile(r"\s*<(no( speech>?)?)?\s*|\s*speech>\s*|.*\{pause\}.*|.*<no speech.*", re.S)  # «молчу» от модели кусками
 
@@ -67,7 +68,7 @@ class Text:
 
 
 class Live:
-    """Gemini Live: сокет открыт всё время, микрофон и колонки компьютера."""
+    """Gemini Live: сокет открывается по требованию (заговорил, пришёл ответ) и закрывается после тишины; микрофон и колонки компьютера."""
 
     def __init__(self, core, duplex: bool, pause_ms: int) -> None:
         """duplex — слушать и пока Gemini говорит: её можно перебить (громкие колонки дают эхо — тише или наушники)."""
@@ -76,10 +77,11 @@ class Live:
         self.lock = asyncio.Lock()
         self.speaking = False  # Gemini читает ответ Claude; остальная её речь (ответы от себя) не звучит — она телефон
         self.sent = self.got = 0
+        self.last = time.monotonic()  # последнее движение в голосовом канале
         self.spk = Speaker()
 
     def start(self) -> list:
-        return [self.keep_open(), self.mic()]
+        return [self.sleeper(), self.mic()]
 
     # ── сокет ──
     async def open(self):
@@ -93,39 +95,50 @@ class Live:
                      "inputAudioTranscription": {}, "outputAudioTranscription": {},
                      # терпеливый конец речи: пауза на размышление не считается концом (запасной вариант к нашему audioStreamEnd)
                      "realtimeInputConfig": {"automaticActivityDetection": {"endOfSpeechSensitivity": "END_SENSITIVITY_LOW", "silenceDurationMs": self.pause_ms}}}
+            if history := self.history():
+                setup["historyConfig"] = {"initialHistoryInClientContent": True}
             ws = await websockets.connect(GEMINI_WS, additional_headers={"x-goog-api-key": env["GEMINI_API_KEY"]}, proxy=env["GEMINI_PROXY"], max_size=None)
             await ws.send(json.dumps({"setup": setup}))
-            self.ws = ws
-            log("gemini.open", model=MODEL, duplex=self.duplex, pause_ms=self.pause_ms)
+            await asyncio.wait_for(ws.recv(), 10)  # setupComplete; отказ (ключ, деньги) — исключение здесь, у того, кто открывал
+            if history:
+                await ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": [{"text": history}]}], "turnComplete": False}}))
+            self.ws, self.last = ws, time.monotonic()
+            log("gemini.open", model=MODEL, duplex=self.duplex, pause_ms=self.pause_ms, history=len(history))
             rec_open(model=MODEL, duplex=self.duplex, pause_ms=self.pause_ms)
             asyncio.create_task(self.read(ws))
-            emit({"state": "сокет Gemini открыт"})
+            emit({"state": "Gemini проснулась"})
             return ws
+
+    def history(self) -> str:
+        """Что было до этого сокета: последние реплики с номерами и ответы — чтобы replaces работал и после сна."""
+        lines = []
+        for r in self.core.recent():
+            lines.append(f"№{r.id} ({r.kind}): {r.text}")
+            if r.answer:
+                lines.append(f"  ответ Claude: {r.answer[:300]}")
+        return "Переданные раньше реплики (для replaces):\n" + "\n".join(lines) if lines else ""
 
     async def send(self, obj: dict) -> None:
         ws = await self.open()
         if audio := obj.get("realtimeInput", {}).get("audio"):
             self.sent += len(audio["data"]) * 3 // 4
+        self.last = time.monotonic()
         await ws.send(json.dumps(obj))
 
-    async def keep_open(self) -> None:
-        """Оборвался (лимит сессии, сеть) — открываем заново."""
-        wait = 2
+    async def sleeper(self) -> None:
+        """Тишина IDLE_S секунд — закрываем сокет сами; проснётся на речи или ответе Claude."""
         while True:
-            try:
-                await (await self.open()).wait_closed()
-                wait = 2
-            except Exception as ex:  # noqa: BLE001
-                log("gemini.error", error=f"открыть сокет: {type(ex).__name__}: {ex}")
-                emit({"error": f"сокет Gemini: {type(ex).__name__}: {ex}"})
-                wait = min(wait * 2, 30)
-            await asyncio.sleep(wait)
+            await asyncio.sleep(2)
+            if self.ws and self.core.quiet() and time.monotonic() - self.last > IDLE_S:
+                log("gemini.sleep", idle_s=IDLE_S)
+                await self.ws.close()
 
     async def read(self, ws) -> None:
         why = "закрыт сервером"
         try:
             async for raw in ws:
                 self.core.heartbeat()
+                self.last = time.monotonic()
                 e = json.loads(raw)
                 if "error" in e:
                     log("gemini.error", error=str(e["error"])[:500])
@@ -143,7 +156,7 @@ class Live:
             if self.ws is ws:
                 self.ws = None
             self.core.turn_end()  # ход, которого ждали, уже не закончится
-            emit({"state": "сокет Gemini закрыт"})
+            emit({"state": "Gemini спит"})
 
     # ── что пришло от Gemini ──
     async def on_call(self, fc: dict) -> None:
