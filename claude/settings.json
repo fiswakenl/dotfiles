@@ -10,6 +10,12 @@
     ],
     "defaultMode": "auto"
   },
+  "model": "opus",
+  "skillOverrides": {
+    "explain": "off",
+    "psy": "off",
+    "lang": "off"
+  },
   "hooks": {
     "Stop": [
       {
@@ -54,7 +60,8 @@
     "pyright-lsp@claude-plugins-official": true,
     "typescript-lsp@claude-plugins-official": true,
     "secret-redactor@inline": false,
-    "skill-creator@claude-plugins-official": false
+    "skill-creator@claude-plugins-official": false,
+    "swift-lsp@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
     "openai-codex": {
@@ -117,10 +124,5 @@
       "routine under drill/, docs/, en/, mlops/ prefixes of this repo (content authoring, not deploy)"
     ]
   },
-  "voiceEnabled": true,
-  "skillOverrides": {
-    "explain": "off",
-    "psy": "off",
-    "lang": "off"
-  }
+  "voiceEnabled": true
 }
