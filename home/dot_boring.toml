@@ -18,6 +18,7 @@ host = "dnk"
 
 [[tunnels]]
 name = "embed"
+# group = "autostart"
 mode = "remote"
 local = "127.0.0.1:8771"
 remote = "127.0.0.1:8771"
@@ -25,6 +26,7 @@ host = "dnk"
 
 [[tunnels]]
 name = "ml4dbs"
+# group = "autostart"
 mode = "remote"
 local = "45.145.190.28:22"
 remote = "127.0.0.1:2222"
