@@ -141,12 +141,9 @@
             <p class="text">
               {#each r.chunks as c, i}
                 {@const g = gap(r, i)}
-                <span class="chunk m{m[i] % 2}">{c.text}</span>{#if r.turns[i]}<sup class:done={r.turns[i][0] === 'complete'}>{TURN[r.turns[i][0]]}</sup>{/if}
-                {#if g}
-                  <button class="gap" class:joint={g.step >= 0} class:cut={g.cut} class:truth={g.truth} class:wrong={g.wrong}
+                <span class="chunk m{m[i] % 2}">{c.text}</span>{#if g}<button class="gap" class:truth={g.truth} class:wrong={g.wrong}
                     class:sel={sel?.kind === k && sel?.i === i} onclick={() => (sel = { kind: k, i })}
-                    title="пауза {sec(g.len)}">{g.truth ? '▼' : ''}{g.step >= 0 ? (g.cut ? '┃' : '⌒') : ''} {sec(g.len)}</button>
-                {/if}
+                    title="пауза {sec(g.len)}{r.turns[i] ? ' · мысль ' + TURN[r.turns[i][0]] : ''}{g.step >= 0 ? (g.cut ? ' · отдельно' : ' · склеил') : ''}" aria-label="пауза"></button>{/if}
               {/each}
             </p>
           {:else}
@@ -155,13 +152,10 @@
         </section>
       {/each}
       <div class="legend mute">
-        цвет куска — какое сообщение ·
-        <span class="gap">0,7 с</span> пауза Deepgram ·
-        <span class="gap joint">⌒</span> стык, склеил ·
-        <span class="gap joint cut">┃</span> стык, отдельно ·
-        <span class="gap truth">▼</span> по разметке тут новое ·
-        <span class="gap wrong">ошибка</span> не совпало с разметкой ·
-        <sup>не закончена</sup>/<sup class="done">закончена</sup> — ответ «мысль закончена?»
+        цвет — сообщение, смена цвета — разрыв ·
+        <span class="gap truth"></span> разрыв по разметке ·
+        <span class="gap wrong"></span> не совпало с разметкой ·
+        клик между кусками — пауза, звук и варианты
       </div>
 
       {#if selG}
@@ -228,18 +222,15 @@
   .src { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
   .badge { font-size: 12px; font-weight: 600; padding: 0 8px; border-radius: 99px; background: #fde2e1; color: #b3261e }
   .badge.good, .cnt.good { background: #e3f6e8; color: #1e7d3a }
-  .text { line-height: 2.5; margin: 4px 0 0 }
-  .chunk { border-radius: 3px; padding: 1px 0 }
+  .text { line-height: 1.9; margin: 4px 0 0 }
+  .chunk { border-radius: 3px; padding: 2px 0 }
   .chunk.m0 { background: #e8f0fc }
-  .chunk.m1 { background: #f3e8fc }
-  sup { font-size: 10px; color: #8e8e93; margin-left: 1px }
-  sup.done { background: #ffd9b0; color: #1d1d1f; border-radius: 3px; padding: 0 3px }
-  .gap { font-size: 11px; padding: 0 5px; margin: 0 2px; border-radius: 99px; background: #f2f2f7; color: #8e8e93; border: 1px solid transparent; font-variant-numeric: tabular-nums; line-height: 17px; display: inline-block }
-  .gap.joint { background: #3a7bd5; color: #fff; font-weight: 600; border-radius: 5px }
-  .gap.joint.cut { background: #e08a1e }
-  .gap.truth { box-shadow: inset 0 -3px 0 #2e9d57 }
-  .gap.wrong { border: 2px solid #d64545 }
-  .gap.sel { outline: 2px solid #1d1d1f; outline-offset: 1px }
+  .chunk.m1 { background: #f6e3c8 }
+  .gap { display: inline-block; box-sizing: content-box; width: 3px; height: 1.05em; padding: 0 4px; margin: 0; border: 0; border-radius: 2px; background: #e3e3e8; background-clip: content-box; vertical-align: -0.15em }
+  button.gap:hover { background-color: #8e8e93 }
+  .gap.truth { background-color: #2e9d57 }
+  .gap.wrong { background-color: #d64545 }
+  .gap.sel { background-color: #1d1d1f }
   .legend { line-height: 2.2; margin: -2px 0 10px }
   .insp { background: #fafafa }
   table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 13px }
