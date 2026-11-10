@@ -3,7 +3,8 @@ Agents как библиотеки, без сервера и сессии LiveKi
 
     микрофон ──весь звук──▶ Deepgram (nova-3) ──текст──▶ Turns ──реплика──▶ решение ──▶ core.call(ask | quick)
 
-Паузы слышит сам Deepgram. Реплика кончается, когда он сказал «речь кончилась» (speech_final или UtteranceEnd) и классификатор
+Текст — без знаков препинания и заглавных (punctuate и smart_format выключены): Deepgram сам ставил точку на паузе, и классификатор
+принимал её за конец мысли. Паузы слышит сам Deepgram. Реплика кончается, когда он сказал «речь кончилась» (speech_final или UtteranceEnd) и классификатор
 по тексту отвечает «мысль закончена»; не закончена или он не ответил — когда PAUSE_MS нет нового текста.
 
 Куда реплику — тот же классификатор, вероятность: продолжает ли она последний переданный ask (договаривает, уточняет,
@@ -50,7 +51,7 @@ SURE = 0.7  # вероятность продолжения ниже — не п
 STATE = {"queued": "ждёт отправки", "sent": "Claude работает над ней", "answered": "Claude ответил"}
 CUT = "Claude начал отвечать, но человек заговорил снова, и ответ остановлен"
 TURN = {"turn": Choice(
-    "The user is talking to a voice assistant. Their words come from speech recognition and may have been cut off. Decide whether "
+    "The user is talking to a voice assistant. Their words come from speech recognition, without punctuation, and may have been cut off. Decide whether "
     "the user's turn is complete. Complete means conversationally complete, not long: one word can be a complete answer, a question "
     "is complete, a correction is complete.",
     {"complete": "the user has taken their turn and the assistant should answer",
@@ -103,7 +104,7 @@ class Listen:
         self.wav_path = trace_open().with_suffix(".wav")
         async with aiohttp.ClientSession() as http:  # без trust_env: Deepgram — напрямую, мимо HTTPS_PROXY
             stt = Deepgram(api_key=os.environ.get("DEEPGRAM_API_KEY") or env(".config/deepgram.env")["DEEPGRAM_API_KEY"],
-                           http_session=http, model="nova-3", language="ru", punctuate=True, smart_format=True, filler_words=False,
+                           http_session=http, model="nova-3", language="ru", punctuate=False, smart_format=False, filler_words=False,
                            vad_events=True, utterance_end_ms=UTTERANCE_END_MS)
             self.mic.start()
             log("mic.start")
