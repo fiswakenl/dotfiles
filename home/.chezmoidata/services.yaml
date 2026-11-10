@@ -1,4 +1,3 @@
-# Службы мака: run — команда, port — запуск по обращению к порту, always — держать запущенной. Выключить — закомментировать, chezmoi apply.
 services:
   callrec:
     run: S=$HOME/Documents/store/dnk/tools/callrec/callrec_server.py; uv sync --quiet --script "$S"; exec "$(uv python find --script "$S")" "$S"
@@ -6,5 +5,5 @@ services:
   kuper:
     run: exec /opt/homebrew/bin/python3 $HOME/Documents/store/dnk/tools/kuper/kuper_server.py
     port: 2256
-  nora:  # туннели из ~/.boring.toml с group = "autostart"
+  nora:
     run: exec boring open -g autostart
