@@ -209,9 +209,8 @@
   button { font: inherit; font-size: 13px; border: 1px solid #d2d2d7; background: #fff; border-radius: 7px; padding: 3px 9px; cursor: pointer }
   button.on { background: #1d1d1f; color: #fff; border-color: #1d1d1f }
   .tip { background: #fff7e0; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px }
-  section { margin-bottom: 22px }
-  section.insp { border: 1px solid #e5e5ea; border-radius: 10px; padding: 8px 12px }
-  h2 { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #8e8e93; margin: 0 0 6px; cursor: help }
+  section { border: 1px solid #e5e5ea; border-radius: 12px; padding: 12px 16px 14px; margin-bottom: 12px; background: #fff }
+  h2 { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #8e8e93; margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid #f0f0f3; cursor: help }
   .mark { margin-left: 6px; color: #d64545; font-size: 13px }
   .mark.good { color: #2e9d57 }
   .src { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
