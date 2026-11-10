@@ -153,6 +153,13 @@
     <button onclick={load}>Загрузить</button>
     <span class="status">{busy || (dirty ? 'Несохранённые правки' : '')}</span>
     <span class="grow"></span>
+    <span class="help" tabindex="0">?<div class="legend">
+        <span><i class="gap">0,7 с</i> не спрашивали</span>
+        <span><i class="gap glued">⌒ 0,7 с</i> {Q.join}</span>
+        <span><i class="gap cut good">┃ 0,7 с</i> {Q.split}</span>
+        <span><i class="gap cut wrong">┃ 0,7 с</i> зря</span>
+        <span><i class="gap wrong">⌒ 0,7 с</i> пропустил границу</span>
+      </div></span>
     <button class="ghost" onclick={() => play(0)}>▶ Отрезок</button>
     <button class="primary" onclick={run}>Прогнать ⌘↵</button>
     <audio bind:this={player} src={'/api/audio?' + qs({ rec, from, to })} preload="auto"></audio>
@@ -202,13 +209,6 @@
     </aside>
 
     <main>
-      <div class="legend">
-        <span><i class="gap">0,7 с</i> не спрашивали</span>
-        <span><i class="gap glued">⌒ 0,7 с</i> {Q.join}</span>
-        <span><i class="gap cut good">┃ 0,7 с</i> {Q.split}</span>
-        <span><i class="gap cut wrong">┃ 0,7 с</i> зря</span>
-        <span><i class="gap wrong">⌒ 0,7 с</i> пропустил границу</span>
-      </div>
       {#if !cfg.labeled}
         <div class="tip">Сначала разметь, где начинается новое сообщение: клик по паузе → «тут новое сообщение».</div>
       {/if}
@@ -320,7 +320,7 @@
   .drawer summary, .pane details summary { font-weight: 400; padding: 0 }
   .pane details summary { padding-left: 8px }
 
-  main { padding: 14px 20px 0; min-height: calc(100vh - 52px); box-sizing: border-box; display: flex; flex-direction: column }
+  main { padding: 16px 20px 0; min-height: calc(100vh - 52px); box-sizing: border-box; display: flex; flex-direction: column }
   .tip { border: 1px solid var(--line2); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; color: var(--dim) }
   section { border: 1px solid var(--line); border-radius: 12px; padding: 10px 16px 12px; margin-bottom: 10px }
   .sec-h { display: flex; align-items: center; gap: 10px; margin-bottom: 4px }
@@ -338,8 +338,12 @@
   .gap.good { background: var(--green) }
   .gap.wrong { background: var(--red); color: #fff }
   .gap.sel, button.gap.sel:hover { background: #fff; color: #0d0d0d; filter: none }
-  .legend { display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--dim); font-size: 12px; margin: 0 2px 12px }
-  .legend .gap { margin: 0 4px 0 0; font-style: normal; display: inline-block }
+  .help { position: relative; width: 24px; height: 24px; line-height: 24px; text-align: center; border: 1px solid var(--line2); border-radius: 50%; color: var(--dim); font-size: 12px; font-weight: 600; cursor: help }
+  .help:hover, .help:focus { color: var(--text); border-color: var(--text); outline: none }
+  .legend { display: none; position: absolute; top: 32px; right: 0; z-index: 3; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--deep); border: 1px solid var(--line2); border-radius: 10px;
+    color: var(--dim); font-size: 12px; font-weight: 400; line-height: 18px; text-align: left; white-space: nowrap; cursor: default; box-shadow: 0 8px 24px rgba(0, 0, 0, .4) }
+  .help:hover .legend, .help:focus .legend { display: flex }
+  .legend .gap { margin: 0 8px 0 0; font-style: normal; display: inline-block; min-width: 52px; text-align: center; box-sizing: border-box }
 
   table { border-collapse: collapse; width: 100%; margin: 0 0 8px }
   td { padding: 4px 10px }
