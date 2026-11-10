@@ -14,12 +14,15 @@
 или PAUSE_MS без текста; затем «продолжение?» на каждом стыке реплик — вопросом и форматом входа со страницы. Ответы кешируются в памяти.
 
 Ручки: GET /api/config — записи, варианты вопросов, форматы входа; GET /api/source?rec&from&to&kind — куски с паузами;
-POST /api/run {rec, from, to, kind, route, input} — прогон; POST /api/replay {rec, from, to} — звук заново через Deepgram.
+POST /api/run {rec, from, to, kind, route, input} — прогон; POST /api/replay {rec, from, to} — звук заново через Deepgram;
+GET /api/audio — звук отрезка (WAV); GET/POST /api/labels — где на самом деле начинается новое сообщение (секунды от начала отрезка,
+размечаешь на странице; лежит рядом с записью: <запись>.labels.json). Время кусков везде — секунды от начала отрезка.
 Варианты вопросов — prompts.json рядом: правятся на странице и сохраняются туда (POST /api/prompts).
 """
 import asyncio
 import datetime
 import hashlib
+import io
 import json
 import re
 import sys
@@ -67,14 +70,28 @@ def gaps(chunks: list[dict]) -> list[dict]:
     return chunks
 
 
+def audio_start(rec: str) -> float:
+    return next(json.loads(l)["ts"] for l in (TRACES / f"{rec}.jsonl").open() if '"audio.start"' in l)
+
+
+def segment(rec: str, a: str, b: str) -> bytes:
+    """Звук отрезка из WAV записи (время в WAV — от audio.start)."""
+    with wave.open(str(TRACES / f"{rec}.wav")) as w:
+        w.setpos(int((at(rec, a) - audio_start(rec)) * listen.RATE))
+        return w.readframes(int((at(rec, b) - at(rec, a)) * listen.RATE))
+
+
 def live_chunks(rec: str, a: str, b: str) -> list[dict]:
-    """Окончательные куски Deepgram из записи: текст, speech_final, время слов (секунды звука потока)."""
+    """Окончательные куски Deepgram из записи: текст, speech_final, время слов — в секундах от начала отрезка (время потока
+    Deepgram отсчитывается от начала звука записи; поток переподключался — сдвинется)."""
     t0, t1 = at(rec, a), at(rec, b)
+    shift = t0 - audio_start(rec)
     out = []
     for line in (TRACES / f"{rec}.jsonl").open():
         r = json.loads(line)
         if r["ev"] == "stt.final" and t0 <= r["ts"] <= t1 and r.get("words"):
-            out.append({"text": r["text"], "sf": bool(r.get("speech_final")), "start": r["words"][0][1], "end": r["words"][-1][2]})
+            out.append({"text": r["text"], "sf": bool(r.get("speech_final")),
+                        "start": round(r["words"][0][1] - shift, 2), "end": round(r["words"][-1][2] - shift, 2)})
     return gaps(out)
 
 
@@ -84,10 +101,7 @@ def replay_path(rec: str, a: str, b: str) -> Path:
 
 async def replay(rec: str, a: str, b: str) -> list[dict]:
     """Звук отрезка заново через поток Deepgram, как в listen.py, в реальном времени (паузы Deepgram слышит по времени звука)."""
-    start = next(json.loads(l)["ts"] for l in (TRACES / f"{rec}.jsonl").open() if '"audio.start"' in l)
-    with wave.open(str(TRACES / f"{rec}.wav")) as w:
-        w.setpos(int((at(rec, a) - start) * listen.RATE))
-        pcm = w.readframes(int((at(rec, b) - at(rec, a)) * listen.RATE))
+    pcm = segment(rec, a, b)
     chunks = []
     async with aiohttp.ClientSession() as http:
         stt = listen.Deepgram(api_key=listen.env(".config/deepgram.env")["DEEPGRAM_API_KEY"], http_session=http, **listen.DEEPGRAM)
@@ -200,6 +214,37 @@ async def post_replay(req):
     return web.json_response({"chunks": await replay(b["rec"], b["from"], b["to"])})
 
 
+async def get_audio(req):
+    q = req.query
+    pcm = segment(q["rec"], q["from"], q["to"])
+    head = io.BytesIO()
+    with wave.open(head, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(listen.RATE)
+        w.writeframes(pcm)
+    return web.Response(body=head.getvalue(), content_type="audio/wav")
+
+
+def labels_path(rec: str) -> Path:
+    return TRACES / f"{rec}.labels.json"
+
+
+async def get_labels(req):
+    q = req.query
+    p = labels_path(q["rec"])
+    return web.json_response((json.loads(p.read_text()) if p.exists() else {}).get(f"{q['from']}-{q['to']}", []))
+
+
+async def post_labels(req):
+    b = await req.json()
+    p = labels_path(b["rec"])
+    all_ = json.loads(p.read_text()) if p.exists() else {}
+    all_[f"{b['from']}-{b['to']}"] = b["cuts"]
+    p.write_text(json.dumps(all_, ensure_ascii=False))
+    return web.json_response({"ok": True})
+
+
 async def post_prompts(req):
     PROMPTS.write_text(json.dumps(await req.json(), ensure_ascii=False, indent=2) + "\n")
     return web.json_response({"ok": True})
@@ -208,7 +253,8 @@ async def post_prompts(req):
 def main() -> None:
     app = web.Application()
     app.add_routes([web.get("/api/config", config), web.get("/api/source", get_source), web.post("/api/run", post_run),
-                    web.post("/api/replay", post_replay), web.post("/api/prompts", post_prompts)])
+                    web.post("/api/replay", post_replay), web.post("/api/prompts", post_prompts), web.get("/api/audio", get_audio),
+                    web.get("/api/labels", get_labels), web.post("/api/labels", post_labels)])
     if DIST.exists():
         app.add_routes([web.get("/", lambda _r: web.FileResponse(DIST / "index.html")), web.static("/", DIST)])
     web.run_app(app, host="127.0.0.1", port=PORT, print=lambda *_: print(f"devtools GV: http://127.0.0.1:{PORT}"))
