@@ -19,6 +19,8 @@
   let cur = $derived(results[key(kind, vi, input)])
   let variant = $derived(cfg?.prompts[vi])
   let step = $derived(cur?.steps?.[pick])
+  // реплика, куда попал кусок: перед ней стык k — она склеена с прошлым сообщением или ушла отдельно
+  let fate = $derived(cur?.chunks?.map((_, i) => { const k = cur.steps.filter((s) => s.at < i).length - 1; return k < 0 ? '' : glue(cur.steps[k].p) ? 'g' : 'n' }) ?? [])
 
   async function api(path, body) {
     const r = await fetch('/api/' + path, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {})
@@ -91,11 +93,11 @@
     {#if cur?.error}
       <span class="mute">{cur.error}</span>
     {:else if cur}
-      <b>{count(cur) === 2 ? '✓ ' : ''}{count(cur)} сообщ. в Claude</b>
+      <b>{count(cur) === 2 ? '✓ ' : ''}{count(cur)} сообщ. в Claude</b> <span class="mute">— <span class="chunk g">голубой</span> кусок склеен с прошлым сообщением, <span class="chunk n">оранжевый</span> ушёл отдельным; серые числа — паузы Deepgram</span>
       <div class="text">
         {#each cur.chunks as c, i}
           {@const s = cur.steps.findIndex((x) => x.at === i)}
-          {c.text}{#if cur.turns[i]}<sup class:done={cur.turns[i][0] === 'complete'}>{TURN[cur.turns[i][0]]} {f(cur.turns[i][1])}</sup>{/if}
+          <span class="chunk {fate[i]}">{c.text}</span>{#if cur.turns[i]}<sup class:done={cur.turns[i][0] === 'complete'}>{TURN[cur.turns[i][0]]} {f(cur.turns[i][1])}</sup>{/if}
           {#if s >= 0}
             <button class="cut" class:glue={glue(cur.steps[s].p)} class:sel={pick === s} onclick={() => (pick = s)}>
               {glue(cur.steps[s].p) ? '⌒ склеил' : '| отдельно'} · {sec(c.gap)} · {f(cur.steps[s].p)}
@@ -119,6 +121,27 @@
       <div class="mute" style="margin-top:8px">вход на выбранном стыке (пауза {sec(step.pause)} → {f(step.p)})</div>
       <pre>{step.input}</pre>
     {/if}
+  </div>
+
+  <div class="card">
+    <b>«продолжение?» на каждом стыке — все варианты</b> <span class="mute">— {KINDS[kind]}, вход {input}; в шапке — пауза перед репликой, как её услышал Deepgram; клик — открыть</span>
+    <table>
+      <thead><tr><th></th>{#each cur?.steps ?? [] as s, k}<th>стык {k + 1}<br />пауза {sec(s.pause)}</th>{/each}<th>сообщ.</th></tr></thead>
+      <tbody>
+      {#each cfg.prompts as p, v}
+        {@const r = results[key(kind, v, input)]}
+        <tr>
+          <td>{p.name}</td>
+          {#each r?.steps ?? [] as s, k}
+            <td class="p" class:on={v === vi && k === pick} style="background:{glue(s.p) ? '#3a7bd5' : '#e08a1e'}" onclick={() => { vi = v; pick = k }}>
+              {glue(s.p) ? '⌒' : '|'} {f(s.p)}
+            </td>
+          {/each}
+          <td class:ok={count(r) === 2}>{count(r) ?? '—'}</td>
+        </tr>
+      {/each}
+      </tbody>
+    </table>
   </div>
 
   <div class="card">
@@ -154,6 +177,8 @@
   .seg button.on { background: #1d1d1f; color: #fff }
   .card { border: 1px solid #e5e5ea; border-radius: 10px; padding: 10px 12px; margin: 10px 0 }
   .text { line-height: 2.4; margin-top: 6px }
+  .chunk.g { background: #dce9fb; border-radius: 3px }
+  .chunk.n { background: #fde8cf; border-radius: 3px }
   sup { font-size: 10px; color: #6e6e73; margin-left: 2px }
   sup.done { background: #ffd9b0; color: #1d1d1f; border-radius: 4px; padding: 0 3px }
   .pz { font-size: 11px; background: #e5e5ea; border-radius: 99px; padding: 0 6px; font-variant-numeric: tabular-nums }
@@ -169,6 +194,7 @@
   td:first-child { text-align: left }
   td:not(:first-child) { cursor: pointer; border-radius: 4px }
   td.ok { background: #e3f6e8; font-weight: 700 }
+  td.p { color: #fff; font-weight: 600; font-variant-numeric: tabular-nums }
   td.on { outline: 2px solid #1d1d1f }
   .ghost { border: 1px solid #d2d2d7; background: #fff; border-radius: 8px; padding: 3px 9px; cursor: pointer }
 </style>
