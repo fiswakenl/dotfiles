@@ -42,6 +42,8 @@ RATE = 16000
 BLOCK_S = 0.02  # блок микрофона
 PAUSE_MS = int(os.environ.get("GV_PAUSE_MS", 2500))  # столько без нового текста — реплика закончена в любом случае
 UTTERANCE_END_MS = 1000  # UtteranceEnd Deepgram: столько без новых слов; меньше 1000 он не принимает
+DEEPGRAM = dict(model="nova-3", language="ru", punctuate=False, smart_format=False, filler_words=False, vad_events=True,
+                utterance_end_ms=UTTERANCE_END_MS)  # настройки потока; без знаков — см. шапку
 RETRY_S = 2  # поток Deepgram сдался — новый через столько
 CONNECT = APIConnectOptions(max_retry=0, timeout=10)  # повторы — наш цикл: новый поток не тащит звук, накопленный без связи
 TURN_WAIT = APIConnectOptions(max_retry=0, timeout=2)  # не ответил — реплику закроет пауза без текста
@@ -104,8 +106,7 @@ class Listen:
         self.wav_path = trace_open().with_suffix(".wav")
         async with aiohttp.ClientSession() as http:  # без trust_env: Deepgram — напрямую, мимо HTTPS_PROXY
             stt = Deepgram(api_key=os.environ.get("DEEPGRAM_API_KEY") or env(".config/deepgram.env")["DEEPGRAM_API_KEY"],
-                           http_session=http, model="nova-3", language="ru", punctuate=False, smart_format=False, filler_words=False,
-                           vad_events=True, utterance_end_ms=UTTERANCE_END_MS)
+                           http_session=http, **DEEPGRAM)
             self.mic.start()
             log("mic.start")
             while True:
