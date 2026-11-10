@@ -5,3 +5,5 @@ services:
   kuper:
     run: exec /opt/homebrew/bin/python3 $HOME/Documents/store/dnk/tools/kuper/kuper_server.py
     port: 2256
+  nora:
+    run: exec boring open -g autostart
