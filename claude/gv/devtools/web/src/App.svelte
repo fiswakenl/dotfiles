@@ -141,9 +141,12 @@
         </section>
       {/each}
       <div class="legend mute">
-        <span class="gap">0,7 с</span> пауза · <span class="gap glued">⌒ 0,7 с</span> спросили и склеил ·
-        <span class="gap cut good">┃ 0,7 с</span> разрыв, как в разметке · <span class="gap cut wrong">┃ 0,7 с</span> лишний разрыв ·
-        <span class="gap wrong">0,7 с</span> разрыв пропущен · клик по паузе — звук и варианты
+        <span class="gap">0,7 с</span><span>пауза</span>
+        <span class="gap glued">⌒ 0,7 с</span><span>спросили и склеил</span>
+        <span class="gap cut good">┃ 0,7 с</span><span>разрыв, как в разметке</span>
+        <span class="gap cut wrong">┃ 0,7 с</span><span>лишний разрыв</span>
+        <span class="gap wrong">0,7 с</span><span>разрыв пропущен</span>
+        <span></span><span>клик по паузе — звук и варианты</span>
       </div>
 
       {#if selG}
@@ -221,7 +224,8 @@
   .gap.good { background: #2e9d57 }
   .gap.wrong { background: #d64545; color: #fff; font-weight: 600 }
   .gap.sel { background: #1d1d1f; color: #fff }
-  .legend { line-height: 1.8; margin: 0 0 14px }
+  .legend { display: grid; grid-template-columns: max-content 1fr; gap: 5px 10px; align-items: center; justify-items: start; margin: 0 0 14px }
+  .legend .gap { margin: 0 }
   .insp { background: #fafafa }
   table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 13px }
   td { padding: 3px 6px }
