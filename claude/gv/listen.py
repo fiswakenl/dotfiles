@@ -158,8 +158,9 @@ class Listen:
             last, cut = self.core.last_ask(), self.core.cut
             continues = bool(last) and await self.ask_continues(QUESTION, state(text, last, pause, cut == last.id), "route",
                                                                  last=last.id, pause=pause and round(pause, 1), cut=cut == last.id)
-            # Остановленный запрос ядро отправит заново: Claude снова занят им, как был до остановки.
-            name = "ask" if continues or not (self.core.claude_busy() or cut) else "quick"
+            # Остановленный запрос ядро отправит заново: Claude снова занят им, как был до остановки. Остановка — на момент ответа
+            # классификатора: пока он думал, ранний вопрос по следующей фразе мог её устроить.
+            name = "ask" if continues or not (self.core.claude_busy() or self.core.cut) else "quick"
             self.core.call(name, {"heard": text, "replaces": last.id if continues else 0})
 
     async def ask_continues(self, question: dict, situation: str, event: str, **fields) -> bool:
