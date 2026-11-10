@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["aiohttp", "sounddevice", "numpy", "livekit-agents>=1.8.11,<2", "livekit-plugins-deepgram>=1.8.11,<2", "livekit-plugins-openai>=1.8.11,<2"]
 # ///
-"""Devtools GV: как вопросы к Decisions делят записанную диктовку. Отдельно от живого GV: в окно Claude ничего не шлёт.
+"""Devtools GV: как три вопроса к Decisions делят записанную диктовку. Отдельно от живого GV: в окно Claude ничего не шлёт.
 
     uv run --script ~/.claude/gv/devtools/server.py      # :8791; страница — npm run dev в devtools/web (или собранная web/dist)
 
@@ -10,14 +10,17 @@
     punct  — текст Deepgram, как пришёл вживую (со знаками, если они тогда были);
     plain  — тот же текст без знаков и заглавных;
     socket — звук отрезка заново через поток Deepgram с настройками listen.py (платно; кнопкой, результат кешируется рядом с записью).
-Прогон — та же логика, что в listen.py: «мысль закончена?» на паузах Deepgram (speech_final), закрытие реплики по ответу «complete»
-или PAUSE_MS без текста; затем «продолжение?» на каждом стыке реплик — вопросом и форматом входа со страницы. Ответы кешируются в памяти.
+Прогон — та же логика, что в listen.py, три вопроса (QUESTIONS), у каждого свои варианты промпта со страницы:
+    turn  — «мысль закончена?» на паузах Deepgram (speech_final): реплика закрыта по ответу «complete» или PAUSE_MS без текста;
+    early — «начало продолжения?» по началу следующей реплики (черновики и куски), будто Claude занят прошлой: да — его ход остановлен;
+    route — «продолжение?» на каждом стыке реплик: дописать к прошлому сообщению или начать новое.
+Ответы кешируются в памяти.
 
 Ручки: GET /api/config — записи, варианты вопросов, форматы входа; GET /api/source?rec&from&to&kind — куски с паузами;
-POST /api/run {rec, from, to, kind, route, input} — прогон; POST /api/replay {rec, from, to} — звук заново через Deepgram;
+POST /api/run {rec, from, to, kind, prompts: {turn, route, early}, input} — прогон; POST /api/replay {rec, from, to} — звук заново через Deepgram;
 GET /api/audio — звук отрезка (WAV); GET/POST /api/labels — где на самом деле начинается новое сообщение (секунды от начала отрезка,
 размечаешь на странице; лежит рядом с записью: <запись>.labels.json). Время кусков везде — секунды от начала отрезка.
-Варианты вопросов — prompts.json рядом: правятся на странице и сохраняются туда (POST /api/prompts).
+Варианты вопросов — prompts.json рядом ({вопрос: [варианты]}): правятся на странице и сохраняются туда (POST /api/prompts).
 """
 import asyncio
 import datetime
@@ -33,7 +36,7 @@ import aiohttp
 from aiohttp import web
 from livekit import rtc
 from livekit.agents import APIConnectOptions
-from livekit.agents.llm import Probability
+from livekit.agents.llm import Choice, Probability
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -44,10 +47,13 @@ PORT = 8791
 PROMPTS = HERE / "prompts.json"
 DIST = HERE / "web" / "dist"
 ASK = APIConnectOptions(max_retry=2, timeout=15)
-INPUTS = {  # формат входа «продолжение?»: prev — то, что уже ушло (с прошлыми склейками), new — новая реплика, pause — секунды
-    "строками": lambda prev, new, pause: (f"Предыдущая реплика (Claude работает над ней): {prev}\n"
-                                          f"Пауза в речи перед новой репликой: {pause:.1f} с\nНовая реплика: {new}"),
-    "json": lambda prev, new, pause: json.dumps({"до_паузы": prev, "пауза_мс": round(pause * 1000), "после_паузы": new}, ensure_ascii=False),
+QUESTIONS = {"turn": listen.TURN["turn"].prompt, "route": listen.QUESTION["continues"].prompt, "early": listen.EARLY["continues"].prompt}
+INPUTS = {  # формат входа «продолжение?»: prev — то, что уже ушло (с прошлыми склейками), new — новая реплика или её начало (early)
+    "строками": lambda prev, new, pause, early=False: (f"Предыдущая реплика (Claude работает над ней): {prev}\n"
+                                                       f"Пауза в речи перед новой репликой: {pause:.1f} с\n"
+                                                       f"{'Начало новой реплики' if early else 'Новая реплика'}: {new}"),
+    "json": lambda prev, new, pause, early=False: json.dumps({"до_паузы": prev, "пауза_мс": round(pause * 1000),
+                                                              "начало_после_паузы" if early else "после_паузы": new}, ensure_ascii=False),
 }
 listen.trace = lambda *a, **k: None  # поток Deepgram — без записи в журнал живого GV
 decisions = listen.openai.DecisionModel(model=listen.DECISIONS_MODEL, api_key=listen.env(".config/openai.env")["OPENAI_API_KEY"])
@@ -83,14 +89,16 @@ def segment(rec: str, a: str, b: str) -> bytes:
 
 def live_chunks(rec: str, a: str, b: str) -> list[dict]:
     """Окончательные куски Deepgram из записи: текст, speech_final, время слов — в секундах от начала отрезка (время потока
-    Deepgram отсчитывается от начала звука записи; поток переподключался — сдвинется)."""
+    Deepgram отсчитывается от начала звука записи; поток переподключался — сдвинется); interims — черновики, шедшие перед куском."""
     t0, t1 = at(rec, a), at(rec, b)
     shift = t0 - audio_start(rec)
-    out = []
+    out, drafts = [], {}
     for line in (TRACES / f"{rec}.jsonl").open():
         r = json.loads(line)
-        if r["ev"] == "stt.final" and t0 <= r["ts"] <= t1 and r.get("words"):
-            out.append({"text": r["text"], "sf": bool(r.get("speech_final")),
+        if r["ev"] == "stt.interim" and t0 <= r["ts"] <= t1:
+            drafts.setdefault(r.get("dg_start"), []).append(r["text"])
+        elif r["ev"] == "stt.final" and t0 <= r["ts"] <= t1 and r.get("words"):
+            out.append({"text": r["text"], "sf": bool(r.get("speech_final")), "interims": drafts.pop(r.get("dg_start"), []),
                         "start": round(r["words"][0][1] - shift, 2), "end": round(r["words"][-1][2] - shift, 2)})
     return gaps(out)
 
@@ -102,7 +110,7 @@ def replay_path(rec: str, a: str, b: str) -> Path:
 async def replay(rec: str, a: str, b: str) -> list[dict]:
     """Звук отрезка заново через поток Deepgram, как в listen.py, в реальном времени (паузы Deepgram слышит по времени звука)."""
     pcm = segment(rec, a, b)
-    chunks = []
+    chunks, drafts = [], {}
     async with aiohttp.ClientSession() as http:
         stt = listen.Deepgram(api_key=listen.env(".config/deepgram.env")["DEEPGRAM_API_KEY"], http_session=http, **listen.DEEPGRAM)
         stream = stt.stream()
@@ -110,8 +118,10 @@ async def replay(rec: str, a: str, b: str) -> list[dict]:
 
         def tap(d: dict) -> None:
             alt = d.get("channel", {}).get("alternatives", [{}])[0]
-            if d.get("type") == "Results" and d.get("is_final") and alt.get("transcript"):
-                chunks.append({"text": alt["transcript"], "sf": bool(d.get("speech_final")),
+            if d.get("type") == "Results" and alt.get("transcript") and not d.get("is_final"):
+                drafts.setdefault(d.get("start"), []).append(alt["transcript"])
+            elif d.get("type") == "Results" and alt.get("transcript"):
+                chunks.append({"text": alt["transcript"], "sf": bool(d.get("speech_final")), "interims": drafts.pop(d.get("start"), []),
                                "start": alt["words"][0]["start"], "end": alt["words"][-1]["end"]})
             heard(d)
         stream._process_stream_event = tap
@@ -137,7 +147,7 @@ def source(rec: str, a: str, b: str, kind: str) -> list[dict] | None:
         p = replay_path(rec, a, b)
         return json.loads(p.read_text()) if p.exists() else None
     chunks = live_chunks(rec, a, b)
-    return [dict(c, text=plain(c["text"])) for c in chunks] if kind == "plain" else chunks
+    return [dict(c, text=plain(c["text"]), interims=[plain(t) for t in c["interims"]]) for c in chunks] if kind == "plain" else chunks
 
 
 async def once(key: str, coro):
@@ -149,11 +159,13 @@ async def once(key: str, coro):
     return cache[key]
 
 
-async def turn(text: str) -> tuple[str, float]:
+async def turn(prompt: str, text: str) -> dict:
+    inp = f"user: {text}"
+
     async def ask():
-        r = (await decisions.evaluate(input=f"user: {text}", decisions=listen.TURN, conn_options=ASK)).results["turn"]
-        return r.value, round((r.probabilities or {}).get(r.value, 0), 2)
-    return await once("turn:" + text, ask())
+        r = (await decisions.evaluate(input=inp, decisions={"turn": Choice(prompt, listen.TURN["turn"].options)}, conn_options=ASK)).results["turn"]
+        return {"v": r.value, "p": round((r.probabilities or {}).get(r.value, 0), 2), "input": inp}
+    return await once("turn:" + hashlib.sha1((prompt + "\0" + text).encode()).hexdigest(), ask())
 
 
 async def route(prompt: str, inp: str) -> float | None:
@@ -163,37 +175,65 @@ async def route(prompt: str, inp: str) -> float | None:
     return await once("route:" + hashlib.sha1((prompt + "\0" + inp).encode()).hexdigest(), ask())
 
 
-async def run(chunks: list[dict], prompt: str, fmt: str) -> dict:
-    """Логика listen.py по кускам: реплики по «мысль закончена?» и PAUSE_MS, затем «продолжение?» на стыках."""
+def hearing(chunks: list[dict]) -> list[str]:
+    """Что listen.py слышит по ходу реплики: каждый черновик и каждый окончательный кусок — вместе с уже сказанным."""
+    out, parts = [], []
+    for c in chunks:
+        for draft in c.get("interims", []):
+            out.append(" ".join([*parts, draft]))
+        parts.append(c["text"])
+        out.append(" ".join(parts))
+    return [t for i, t in enumerate(out) if i == 0 or t != out[i - 1]]
+
+
+async def run(chunks: list[dict], prompts: dict, fmt: str) -> dict:
+    """Логика listen.py по кускам. turns[i] — ответ «мысль закончена?» после куска i; ends — куски, на которых реплика закрыта;
+    early и steps — по стыку реплик (at — последний кусок прошлой): ранняя проверка по началу новой и «продолжение?» по всей."""
     turns: list = [None] * len(chunks)
     ends, parts = [], []
     for i, c in enumerate(chunks):
         parts.append(c["text"])
         closed = c["gap"] is None or c["gap"] * 1000 >= listen.PAUSE_MS
         if c["sf"]:
-            turns[i] = await turn(" ".join(parts))
-            closed = closed or turns[i][0] == "complete"
+            turns[i] = await turn(prompts["turn"], " ".join(parts))
+            closed = closed or turns[i]["v"] == "complete"
         if closed:
             ends.append(i)
             parts = []
-    phrases, start = [], 0
-    for e in ends:
-        phrases.append(" ".join(c["text"] for c in chunks[start:e + 1]))
-        start = e + 1
-    sent, steps = phrases[0], []
+    bounds = [(0 if k == 0 else ends[k - 1] + 1, e) for k, e in enumerate(ends)]
+    phrases = [" ".join(c["text"] for c in chunks[a:e + 1]) for a, e in bounds]
+    sent, steps, early = phrases[0], [], []
     for k in range(1, len(phrases)):
         pause = chunks[ends[k - 1]]["gap"]
+        asks = []
+        for text in hearing(chunks[bounds[k][0]:bounds[k][1] + 1]):
+            inp = INPUTS[fmt](sent, text, pause, early=True)
+            asks.append({"text": text, "p": await route(prompts["early"], inp), "input": inp})
+            if asks[-1]["p"] is not None and asks[-1]["p"] >= listen.SURE:
+                break  # ход Claude остановлен — дальше не спрашиваем
+        early.append({"at": ends[k - 1], "pause": pause, "asks": asks})
         inp = INPUTS[fmt](sent, phrases[k], pause)
-        p = await route(prompt, inp)
+        p = await route(prompts["route"], inp)
         steps.append({"at": ends[k - 1], "pause": pause, "p": p, "input": inp})
         sent = sent + " " + phrases[k] if p is not None and p >= listen.SURE else phrases[k]
-    return {"turns": turns, "steps": steps}
+    return {"turns": turns, "ends": ends, "steps": steps, "early": early}
+
+
+def prompts() -> dict:
+    """Варианты промптов по вопросам; первый у каждого — как сейчас в listen.py."""
+    saved = json.loads(PROMPTS.read_text())
+    saved = saved if isinstance(saved, dict) else {"route": saved}
+    out = {}
+    for q, text in QUESTIONS.items():
+        rest = [p for p in saved.get(q, []) if p["name"] != "как в gv"]
+        out[q] = [{"name": "как в gv", "text": text}, *rest]
+    return out
 
 
 async def config(_req):
     recs = sorted(p.stem for p in TRACES.glob("*.jsonl"))
-    return web.json_response({"recs": recs, "prompts": json.loads(PROMPTS.read_text()), "inputs": list(INPUTS), "sure": listen.SURE,
-                              "turn": listen.TURN["turn"].prompt, "turn_options": listen.TURN["turn"].options})
+    return web.json_response({"recs": recs, "prompts": prompts(), "inputs": list(INPUTS), "sure": listen.SURE,
+                              "pause_ms": listen.PAUSE_MS, "turn_options": listen.TURN["turn"].options})
 
 
 async def get_source(req):
@@ -206,7 +246,7 @@ async def post_run(req):
     chunks = source(b["rec"], b["from"], b["to"], b["kind"])
     if chunks is None:
         return web.json_response({"error": "нет повторного прогона звука — нажми «звук заново»"}, status=404)
-    return web.json_response({"chunks": chunks, **await run(chunks, b["route"], b["input"])})
+    return web.json_response({"chunks": chunks, **await run(chunks, b["prompts"], b["input"])})
 
 
 async def post_replay(req):

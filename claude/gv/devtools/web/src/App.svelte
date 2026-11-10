@@ -1,87 +1,125 @@
 <script>
-  // Как вопросы к Decisions делят записанную диктовку. Три вида текста одного отрезка — друг под другом; правильное деление
-  // размечаешь сам (клик по паузе → «тут новое сообщение»), и каждый вариант вопроса считается по нему.
+  // Как три вопроса к Decisions делят записанную диктовку. Слева выбираешь вопрос — справа в тексте видно, где он сработал и что
+  // ответил. Три вида текста одного отрезка — друг под другом; правильное деление размечаешь сам (клик по паузе → «тут новое
+  // сообщение»), и каждый вариант промпта считается по нему.
   const KINDS = { punct: 'как есть', plain: 'без знаков', socket: 'звук заново' }
   const HINT = { punct: 'текст Deepgram, как пришёл вживую', plain: 'тот же текст без знаков и заглавных', socket: 'звук отрезка заново через Deepgram (как сейчас в listen.py)' }
   const TURN = { complete: 'закончена', short: 'не закончена', long: 'подождать' }
+  // join — модель считает, что сообщение то же (⌒); split — что тут граница (┃)
+  const QS = {
+    turn: { name: 'Мысль закончена?', when: 'замолчал', join: 'ждёт', split: 'закрыл фразу',
+      hint: 'Deepgram услышал конец речи. Модель решает: фраза закончена — закрыть её, или человек договорит — подождать.' },
+    route: { name: 'Продолжение?', when: 'фраза закрыта', join: 'склеил', split: 'новое сообщение',
+      hint: 'Фраза закрыта. Модель решает: дописать её к прошлому сообщению или отправить отдельным.' },
+    early: { name: 'Начало продолжения?', when: 'Claude занят', join: 'остановил Claude', split: 'не тронул',
+      hint: 'Claude работает над прошлой фразой, а человек заговорил снова. По первым словам модель решает: это продолжение — остановить Claude сразу, или новая мысль — не трогать.' },
+  }
   const NEAR = 0.5 // метка разметки относится к паузе, если лежит в ней или рядом (секунды)
 
   let cfg = $state(null)
   let rec = $state('20261110-103304'), from = $state('10:36:20'), to = $state('10:37:20')
-  let input = $state('строками'), vi = $state(1)
-  let results = $state({}) // ключ → {chunks, turns, steps} | {error}
+  let input = $state('строками')
+  let qn = $state('route') // выбранный вопрос
+  let vs = $state({ turn: 0, route: 0, early: 0 }) // выбранный вариант промпта у каждого вопроса
+  let results = $state({}) // ключ → {chunks, turns, ends, steps, early} | {error}
   let cuts = $state([]) // разметка: секунды от начала отрезка, где начинается новое сообщение
   let sel = $state(null) // {kind, i} — выбранная пауза: после куска i
   let busy = $state(''), dirty = $state(false)
   let player = $state()
+  const asked = {} // прогоны, которые уже идут
 
-  const key = (k, v, i = input) => `${rec}|${from}|${to}|${k}|${v}|${i}`
+  // прогон зависит от варианта каждого из трёх вопросов: у вопроса q берём вариант v, у остальных — выбранные
+  const pick = (q, v) => ({ ...vs, [q]: v })
+  const key = (k, q = qn, v = vs[q]) => { const t = pick(q, v); return `${rec}|${from}|${to}|${k}|${t.turn}|${t.route}|${t.early}|${input}` }
   const f = (x) => (x == null ? '—' : x.toFixed(2).replace('.', ','))
   const sec = (x) => (x == null ? '' : Math.max(0, x).toFixed(1).replace('.', ',') + ' с')
   const glue = (p) => p != null && p >= cfg.sure
-  const q = (o) => new URLSearchParams(o).toString()
+  const qs = (o) => new URLSearchParams(o).toString()
+  const top = (asks) => asks.reduce((m, a) => ((a.p ?? 0) >= (m.p ?? 0) ? a : m), asks[0])
 
-  // пауза после куска i: где она в отрезке и что про неё решено
-  function gap(r, i) {
+  // что вопрос q ответил на паузе после куска i: asked — спрашивали ли, split — решил, что тут граница
+  function answer(r, i, q = qn) {
+    if (q === 'turn') {
+      const t = r.turns[i], closed = r.ends.includes(i)
+      if (!t && !closed) return { asked: false }
+      const timer = closed && t?.v !== 'complete'
+      return { asked: true, split: closed, p: t?.p, timer, input: t?.input,
+        text: (t ? `${TURN[t.v]} ${f(t.p)}` : 'Deepgram паузы не услышал') + (timer ? ` · закрыл таймер ${sec(cfg.pause_ms / 1000)}` : '') }
+    }
+    if (q === 'route') {
+      const s = r.steps.find((x) => x.at === i)
+      return s ? { asked: true, split: !glue(s.p), p: s.p, input: s.input, text: f(s.p) } : { asked: false }
+    }
+    const e = r.early.find((x) => x.at === i)
+    if (!e) return { asked: false }
+    const best = top(e.asks)
+    return { asked: true, split: !glue(best.p), p: best.p, input: best.input, asks: e.asks, text: `${f(best.p)} на «${best.text}»` }
+  }
+  // пауза после куска i: где она в отрезке, что ответил вопрос и совпало ли с разметкой
+  function gap(r, i, q = qn) {
     const a = r.chunks[i], b = r.chunks[i + 1]
     if (!b) return null
-    const step = r.steps.findIndex((s) => s.at === i)
     const truth = cuts.some((t) => t >= a.end - NEAR && t <= b.start + NEAR)
-    const cut = step >= 0 && !glue(r.steps[step].p)
-    return { from: a.end, to: b.start, len: a.gap, step, truth, cut, wrong: cfg.labeled && (step >= 0 ? cut !== truth : truth) }
+    const ans = answer(r, i, q)
+    return { from: a.end, to: b.start, len: a.gap, truth, ...ans, wrong: cfg.labeled && (ans.asked ? ans.split !== truth : truth) }
   }
   // вариант делит этот вид текста ровно по разметке?
-  function score(r) {
+  function score(r, q = qn) {
     if (!r?.chunks || !cfg.labeled) return null
-    return r.chunks.every((_, i) => !gap(r, i)?.wrong)
+    return r.chunks.every((_, i) => !gap(r, i, q)?.wrong)
   }
-  const total = (v) => Object.keys(KINDS).filter((k) => score(results[key(k, v)])).length
+  const total = (q, v) => Object.keys(KINDS).filter((k) => score(results[key(k, q, v)], q)).length
 
   async function api(path, body) {
     const r = await fetch('/api/' + path, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {})
     return r.json()
   }
-  const runOne = async (k, v, i = input) => (results[key(k, v, i)] = await api('run', { rec, from, to, kind: k, route: cfg.prompts[v].text, input: i }))
-
-  async function load() {
+  // досчитать всё, что нужно экрану: каждый вариант каждого вопроса на каждом виде текста
+  async function fill() {
+    const jobs = []
+    for (const k of Object.keys(KINDS)) for (const q of Object.keys(QS)) cfg.prompts[q].forEach((_, v) => {
+      const id = key(k, q, v), t = pick(q, v)
+      if (results[id] || asked[id]) return
+      const prompts = Object.fromEntries(Object.keys(QS).map((x) => [x, cfg.prompts[x][t[x]].text]))
+      jobs.push((asked[id] = api('run', { rec, from, to, kind: k, prompts, input }).then((r) => { results[id] = r; delete asked[id] })))
+    })
+    if (!jobs.length) return
     busy = 'гоняю Decisions…'
-    sel = null
-    cuts = await api('labels?' + q({ rec, from, to }))
-    cfg.labeled = cuts.length > 0
-    await Promise.all(Object.keys(KINDS).flatMap((k) => cfg.prompts.map((_, v) => runOne(k, v))))
+    await Promise.all(jobs)
     busy = ''
+  }
+  async function load() {
+    sel = null
+    results = {}
+    cuts = await api('labels?' + qs({ rec, from, to }))
+    cfg.labeled = cuts.length > 0
+    await fill()
   }
   async function run() {
-    busy = 'гоняю Decisions…'
     await api('prompts', cfg.prompts)
     dirty = false
-    await Promise.all(Object.keys(KINDS).map((k) => runOne(k, vi)))
-    busy = ''
+    results = {}
+    await fill()
   }
-  async function setInput(i) {
-    input = i
-    busy = 'гоняю Decisions…'
-    await Promise.all(Object.keys(KINDS).flatMap((k) => cfg.prompts.map((_, v) => results[key(k, v)] ?? runOne(k, v))))
-    busy = ''
-  }
+  const choose = (v, q = qn) => { vs[q] = v; fill() }
+  const setInput = (i) => { input = i; fill() }
   async function replay() {
     busy = 'звук заново через Deepgram, ~минута…'
     await api('replay', { rec, from, to })
-    await Promise.all(cfg.prompts.map((_, v) => runOne('socket', v)))
-    busy = ''
+    results = {}
+    await fill()
   }
   function add() {
-    cfg.prompts.push({ name: 'вариант ' + (cfg.prompts.length + 1), text: cfg.prompts[vi].text })
-    vi = cfg.prompts.length - 1
+    const list = cfg.prompts[qn]
+    list.push({ name: 'вариант ' + list.length, text: list[vs[qn]].text })
+    vs[qn] = list.length - 1
     dirty = true
   }
   async function drop() {
-    if (cfg.prompts.length < 2) return
-    cfg.prompts.splice(vi, 1)
-    vi = Math.max(0, vi - 1)
-    results = {}
-    await api('prompts', cfg.prompts)
-    await load()
+    if (!vs[qn]) return
+    cfg.prompts[qn].splice(vs[qn], 1)
+    vs[qn] -= 1
+    await run()
   }
   async function toggleTruth(g) {
     const near = cuts.filter((t) => t >= g.from - NEAR && t <= g.to + NEAR)
@@ -100,7 +138,10 @@
 
   $effect(() => { api('config').then((c) => { cfg = c; load() }) })
 
-  let selR = $derived(sel && results[key(sel.kind, vi)])
+  let Q = $derived(QS[qn])
+  let list = $derived(cfg?.prompts[qn])
+  let cur = $derived(list?.[vs[qn]])
+  let selR = $derived(sel && results[key(sel.kind)])
   let selG = $derived(selR?.chunks && gap(selR, sel.i))
 </script>
 
@@ -114,51 +155,65 @@
     <span class="grow"></span>
     <button class="ghost" onclick={() => play(0)}>▶ Отрезок</button>
     <button class="primary" onclick={run}>Прогнать ⌘↵</button>
-    <audio bind:this={player} src={'/api/audio?' + q({ rec, from, to })} preload="auto"></audio>
+    <audio bind:this={player} src={'/api/audio?' + qs({ rec, from, to })} preload="auto"></audio>
   </header>
 
   <div class="grid">
     <aside>
       <div class="pane">
-        <div class="pane-h">
-          <h2 title="Промпт спрашивает классификатор на каждой паузе: новая реплика — продолжение прошлой или новое сообщение?">Варианты промпта</h2>
-          <button class="mini" onclick={add} title="Новый вариант на основе выбранного">+ новый</button>
-        </div>
-        {#each cfg.prompts as p, v}
-          <button class="item" class:on={v === vi} onclick={() => (vi = v)}>
-            <span>{p.name}</span>
-            {#if cfg.labeled}<span class="cnt" class:good={total(v) === 3} title="Делит как в разметке в {total(v)} из 3 текстов справа">{total(v)}/3</span>{/if}
+        <div class="pane-h"><h2 title="Три момента, когда GV спрашивает модель. Выбери — справа в тексте видно, где вопрос сработал и что ответил.">Вопрос к модели</h2></div>
+        {#each Object.entries(QS) as [q, m], n}
+          <button class="item" class:on={q === qn} onclick={() => (qn = q)} title={m.hint}>
+            <span><b class="num">{n + 1}</b>{m.name}</span><span class="when">{m.when}</span>
           </button>
         {/each}
       </div>
 
       <div class="pane">
-        <div class="pane-h"><h2>Промпт</h2><button class="mini danger" onclick={drop}>удалить</button></div>
-        <input class="name" bind:value={cfg.prompts[vi].name} oninput={() => (dirty = true)} placeholder="Название варианта" />
-        <textarea bind:value={cfg.prompts[vi].text} oninput={() => (dirty = true)} onkeydown={keys} rows="9" placeholder="Текст промпта"></textarea>
-        <div class="kv"><span>Реплики подаются</span>
-          <div class="seg">{#each cfg.inputs as i}<button class:on={input === i} onclick={() => setInput(i)}>{i}</button>{/each}</div>
+        <div class="pane-h">
+          <h2 title={Q.hint}>Варианты промпта</h2>
+          <button class="mini" onclick={add} title="Новый вариант на основе выбранного">+ новый</button>
         </div>
+        {#each list as p, v}
+          <button class="item" class:on={v === vs[qn]} onclick={() => choose(v)}>
+            <span>{p.name}</span>
+            {#if cfg.labeled}<span class="cnt" class:good={total(qn, v) === 3} title="Совпал с разметкой в {total(qn, v)} из 3 текстов справа">{total(qn, v)}/3</span>{/if}
+          </button>
+        {/each}
       </div>
 
       <div class="pane">
-        <details><summary>Вопрос «мысль закончена?»</summary><pre>{cfg.turn}</pre></details>
+        {#if vs[qn]}
+          <div class="pane-h"><h2>Промпт</h2><button class="mini danger" onclick={drop}>удалить</button></div>
+          <input class="name" bind:value={cur.name} oninput={() => (dirty = true)} placeholder="Название варианта" />
+          <textarea bind:value={cur.text} oninput={() => (dirty = true)} onkeydown={keys} rows="7" placeholder="Текст промпта"></textarea>
+        {:else}
+          <div class="pane-h"><h2 title="Этот промпт сейчас стоит в listen.py. Чтобы менять — «+ новый» сделает копию.">Промпт — как в gv</h2><button class="mini" onclick={add}>править копию</button></div>
+          <textarea value={cur.text} readonly rows="7"></textarea>
+        {/if}
+        {#if qn === 'turn'}
+          <details><summary class="dim small">Варианты ответа</summary><pre>{Object.entries(cfg.turn_options).map(([k, v]) => `${TURN[k]} — ${v}`).join('\n\n')}</pre></details>
+        {:else}
+          <div class="kv"><span>Реплики подаются</span>
+            <div class="seg">{#each cfg.inputs as i}<button class:on={input === i} onclick={() => setInput(i)}>{i}</button>{/each}</div>
+          </div>
+        {/if}
       </div>
     </aside>
 
     <main>
       <div class="legend">
-        <span><i class="gap">0,7 с</i> пауза</span>
-        <span><i class="gap glued">⌒ 0,7 с</i> склеил</span>
-        <span><i class="gap cut good">┃ 0,7 с</i> разрыв верный</span>
-        <span><i class="gap cut wrong">┃ 0,7 с</i> лишний</span>
-        <span><i class="gap wrong">0,7 с</i> пропущен</span>
+        <span><i class="gap">0,7 с</i> не спрашивали</span>
+        <span><i class="gap glued">⌒ 0,7 с</i> {Q.join}</span>
+        <span><i class="gap cut good">┃ 0,7 с</i> {Q.split}</span>
+        <span><i class="gap cut wrong">┃ 0,7 с</i> зря</span>
+        <span><i class="gap wrong">⌒ 0,7 с</i> пропустил границу</span>
       </div>
       {#if !cfg.labeled}
         <div class="tip">Сначала разметь, где начинается новое сообщение: клик по паузе → «тут новое сообщение».</div>
       {/if}
       {#each Object.entries(KINDS) as [k, name]}
-        {@const r = results[key(k, vi)]}
+        {@const r = results[key(k)]}
         {@const s = score(r)}
         <section>
           <div class="sec-h">
@@ -171,8 +226,8 @@
             <p class="msg">
               {#each r.chunks as c, i}
                 {@const g = gap(r, i)}
-                {c.text}{#if g}<button class="gap" class:glued={g.step >= 0 && !g.cut} class:cut={g.cut} class:good={g.cut && cfg.labeled && !g.wrong} class:wrong={g.wrong}
-                    class:sel={sel?.kind === k && sel?.i === i} onclick={() => (sel = { kind: k, i })}>{g.cut ? '┃ ' : g.step >= 0 ? '⌒ ' : ''}{sec(g.len)}</button>{/if}
+                {c.text}{#if g}<button class="gap" class:glued={g.asked && !g.split} class:cut={g.split} class:good={g.split && cfg.labeled && !g.wrong} class:wrong={g.wrong}
+                    class:sel={sel?.kind === k && sel?.i === i} onclick={() => (sel = { kind: k, i })}>{g.split ? '┃ ' : g.asked ? '⌒ ' : ''}{sec(g.len)}</button>{/if}
               {/each}
             </p>
           {:else}
@@ -184,27 +239,34 @@
       {#if selG}
         <div class="drawer">
           <div class="sec-h">
-            <h2>Пауза {sec(selG.len)}</h2><span class="dim">{KINDS[sel.kind]}</span><span class="grow"></span>
+            <h2>Пауза {sec(selG.len)}</h2><span class="dim">{KINDS[sel.kind]} · {Q.name}</span><span class="grow"></span>
             <label class="check"><input type="checkbox" checked={selG.truth} onchange={() => toggleTruth(selG)} /> тут новое сообщение</label>
             <button onclick={() => play(selG.from - 2, selG.to + 2)}>▶ Послушать</button>
             <button class="ghost" onclick={() => (sel = null)} title="Закрыть">✕</button>
           </div>
-          {#if selG.step >= 0}
+          {#if selG.asked}
             <table>
               <tbody>
-                {#each cfg.prompts as p, v}
-                  {@const st = results[key(sel.kind, v)]?.steps?.find((x) => x.at === sel.i)}
-                  <tr class:on={v === vi} onclick={() => (vi = v)}>
+                {#each list as p, v}
+                  {@const rv = results[key(sel.kind, qn, v)]}
+                  {@const a = rv?.chunks ? answer(rv, sel.i) : null}
+                  <tr class:on={v === vs[qn]} onclick={() => choose(v)}>
                     <td>{p.name}</td>
-                    <td class="bar"><i style="width:{(st?.p ?? 0) * 100}%" class:glue={glue(st?.p)}></i><b style="left:{cfg.sure * 100}%"></b></td>
-                    <td class="dim">{f(st?.p)} {st ? (glue(st.p) ? '⌒ склеил' : '┃ отдельно') : ''}</td>
+                    <td class="bar"><i style="width:{(a?.p ?? 0) * 100}%" class:glue={a?.asked && !a.split}></i>{#if qn !== 'turn'}<b style="left:{cfg.sure * 100}%"></b>{/if}</td>
+                    <td class="dim">{#if a?.asked}{a.split ? '┃ ' + Q.split : '⌒ ' + Q.join} · {a.text}{:else if a}не спрашивали{/if}</td>
                   </tr>
                 {/each}
               </tbody>
             </table>
-            <details><summary class="dim small">Что ушло классификатору — «{cfg.prompts[vi].name}»</summary><pre>{selR.steps.find((x) => x.at === sel.i)?.input}</pre></details>
+            <details><summary class="dim small">Что ушло модели — «{cur.name}»</summary>
+              {#if selG.asks}<pre>{selG.asks.map((a) => `${f(a.p)}  ${a.text}`).join('\n')}</pre>{/if}
+              <pre>{selG.input ?? 'Модель не спрашивали: фразу закрыл таймер.'}</pre>
+            </details>
+          {:else if qn === 'turn'}
+            <div class="dim">Deepgram тут конца речи не услышал — вопрос не задавали, фраза идёт дальше.</div>
           {:else}
-            <div class="dim">Здесь реплика не закрылась{selR.turns[sel.i] ? ` — «мысль закончена?»: ${TURN[selR.turns[sel.i][0]]} ${f(selR.turns[sel.i][1])}` : ' — Deepgram паузы не услышал'}, поэтому «продолжение?» тут не спрашивали.</div>
+            {@const t = answer(selR, sel.i, 'turn')}
+            <div class="dim">Фраза тут не закрылась{t.asked ? ` («мысль закончена?»: ${t.text})` : ' (Deepgram конца речи не услышал)'}, поэтому этот вопрос не задавали.</div>
           {/if}
         </div>
       {/if}
@@ -243,6 +305,9 @@
   .note { font-size: 12px; line-height: 1.45; color: var(--dim); margin: 0 0 10px }
   .item { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; text-align: left; border-color: transparent; padding: 7px 10px; margin-bottom: 2px }
   .item.on { background: var(--hover) }
+  .num { display: inline-block; width: 18px; color: var(--dim); font-weight: 500 }
+  .when { font-size: 12px; color: var(--dim); text-align: right }
+  textarea[readonly] { color: var(--dim) }
   .cnt { font-size: 12px; font-weight: 500; padding: 1px 7px; border-radius: 6px; background: var(--chip); color: var(--dim); font-variant-numeric: tabular-nums }
   .cnt.good { background: rgba(26, 155, 99, .22); color: #5fd39a }
   .name, textarea { display: block; width: 100%; padding: 8px 10px; margin-bottom: 8px }
@@ -252,7 +317,8 @@
   .seg button { border: 0; border-radius: 6px; padding: 3px 12px; color: var(--dim) }
   .seg button.on { background: var(--hover); color: var(--text) }
   summary { cursor: pointer; font-weight: 600; padding-left: 8px }
-  .drawer summary { font-weight: 400; padding: 0 }
+  .drawer summary, .pane details summary { font-weight: 400; padding: 0 }
+  .pane details summary { padding-left: 8px }
 
   main { padding: 14px 20px 0; min-height: calc(100vh - 52px); box-sizing: border-box; display: flex; flex-direction: column }
   .tip { border: 1px solid var(--line2); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; color: var(--dim) }
