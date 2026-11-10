@@ -35,12 +35,6 @@
     if (!r?.chunks || !cfg.labeled) return null
     return r.chunks.every((_, i) => !gap(r, i)?.wrong)
   }
-  // сообщения: списки номеров кусков, как их получит Claude
-  function groups(r) {
-    const out = [[]]
-    r.chunks.forEach((_, i) => { if (i && gap(r, i - 1)?.cut) out.push([]); out.at(-1).push(i) })
-    return out
-  }
   const total = (v) => Object.keys(KINDS).filter((k) => score(results[key(k, v)])).length
 
   async function api(path, body) {
@@ -134,27 +128,22 @@
           {#if r?.error}
             <button onclick={replay}>прогнать звук через Deepgram (платно, ~минута)</button>
           {:else if r?.chunks}
-            {#each groups(r) as grp, n}
-              {#if n}
-                {@const g = gap(r, grp[0] - 1)}
-                <button class="brk" class:good={cfg.labeled && !g.wrong} class:wrong={g.wrong}
-                  class:sel={sel?.kind === k && sel?.i === grp[0] - 1} onclick={() => (sel = { kind: k, i: grp[0] - 1 })}><span>{sec(g.len)}</span></button>
-              {/if}
-              <p class="msg">
-                {#each grp as i, j}
-                  {r.chunks[i].text}{#if j < grp.length - 1}{@const g = gap(r, i)}<button class="gap" class:glued={g.step >= 0} class:wrong={g.wrong}
-                      class:sel={sel?.kind === k && sel?.i === i} onclick={() => (sel = { kind: k, i })}>{g.step >= 0 ? '⌒ ' : ''}{sec(g.len)}</button>{/if}
-                {/each}
-              </p>
-            {/each}
+            <p class="msg">
+              {#each r.chunks as c, i}
+                {@const g = gap(r, i)}
+                {c.text}{#if g}<button class="gap" class:glued={g.step >= 0 && !g.cut} class:cut={g.cut} class:good={g.cut && cfg.labeled && !g.wrong} class:wrong={g.wrong}
+                    class:sel={sel?.kind === k && sel?.i === i} onclick={() => (sel = { kind: k, i })}>{g.cut ? '┃ ' : g.step >= 0 ? '⌒ ' : ''}{sec(g.len)}</button>{/if}
+              {/each}
+            </p>
           {:else}
             <span class="mute">…</span>
           {/if}
         </section>
       {/each}
       <div class="legend mute">
-        абзац — сообщение · <span class="gap">0,7 с</span> пауза · <span class="gap glued">⌒ 0,7 с</span> спросили и склеил ·
-        линия — разрыв: <span class="gap good">как в разметке</span>, <span class="gap wrong">ошибка</span> · красная пауза — тут должен быть разрыв · клик по паузе — звук и варианты
+        <span class="gap">0,7 с</span> пауза · <span class="gap glued">⌒ 0,7 с</span> спросили и склеил ·
+        <span class="gap cut good">┃ 0,7 с</span> разрыв, как в разметке · <span class="gap cut wrong">┃ 0,7 с</span> лишний разрыв ·
+        <span class="gap wrong">0,7 с</span> разрыв пропущен · клик по паузе — звук и варианты
       </div>
 
       {#if selG}
@@ -225,17 +214,13 @@
   .src { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
   .cnt.good { background: #e3f6e8; color: #1e7d3a }
   .msg { margin: 0; font-size: 15px; line-height: 1.9; max-width: 740px }
-  .gap, .brk span { font-size: 11px; line-height: 17px; padding: 0 7px; border: 0; border-radius: 99px; background: #ececf0; color: #6e6e73; font-variant-numeric: tabular-nums }
-  .gap { margin: 0 4px; vertical-align: 1px }
-  button.gap:hover, .brk:hover span { filter: brightness(.92) }
+  .gap { font-size: 11px; line-height: 17px; padding: 0 7px; margin: 0 4px; border: 0; border-radius: 99px; background: #ececf0; color: #6e6e73; font-variant-numeric: tabular-nums; vertical-align: 1px }
+  button.gap:hover { filter: brightness(.92) }
   .gap.glued { background: #3a7bd5; color: #fff; font-weight: 600 }
-  .gap.good, .brk.good span { background: #2e9d57; color: #fff; font-weight: 600 }
-  .gap.wrong, .brk.wrong span { background: #d64545; color: #fff; font-weight: 600 }
-  .gap.sel, .brk.sel span { background: #1d1d1f; color: #fff }
-  .brk { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 740px; padding: 4px 0; border: 0; background: none; color: #c7c7cc }
-  .brk::before, .brk::after { content: ''; flex: 1; height: 1px; background: currentColor }
-  .brk.good { color: #9ed3b1 }
-  .brk.wrong { color: #eda3a3 }
+  .gap.cut { background: #e08a1e; color: #fff; font-weight: 600 }
+  .gap.good { background: #2e9d57 }
+  .gap.wrong { background: #d64545; color: #fff; font-weight: 600 }
+  .gap.sel { background: #1d1d1f; color: #fff }
   .legend { line-height: 1.8; margin: 0 0 14px }
   .insp { background: #fafafa }
   table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 13px }
