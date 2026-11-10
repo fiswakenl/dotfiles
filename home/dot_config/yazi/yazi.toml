@@ -1,6 +1,6 @@
 # Enter на тексте и коде — VS Code; остальное (картинки, PDF…) — как раньше, программой по умолчанию.
 [opener]
-code = [{ run = 'open -a "Visual Studio Code" "$@"', orphan = true, desc = "VS Code", for = "macos" }]
+code = [{ run = 'open -a "Visual Studio Code" %s', orphan = true, desc = "VS Code", for = "macos" }]
 
 [open]
 prepend_rules = [
