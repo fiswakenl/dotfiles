@@ -5,6 +5,12 @@ services:
   kuper:
     run: exec /opt/homebrew/bin/python3 $HOME/Documents/store/dnk/tools/kuper/kuper_server.py
     port: 2256
+  sufler-embed:
+    run: exec $HOME/.local/share/sufler-embed/venv/bin/python $HOME/.local/share/sufler-embed/local_embed.py serve
+    dir: ~/.local/share/sufler-embed
+    env:
+      HF_HUB_OFFLINE: "1"
+    always: true
   proxy:
     run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -L 127.0.0.1:1080:127.0.0.1:1080 dnk
     # run: . $HOME/.config/proxy.env; exec gost -L http://127.0.0.1:1080 -F "$PAID_PROXY"
@@ -13,7 +19,7 @@ services:
     run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -L 127.0.0.1:8444:127.0.0.1:8444 dnk
     always: true
   tunnel-kbju:
-    run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -L 127.0.0.1:8782:127.0.0.1:2256 dnk
+    run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -R 127.0.0.1:8782:127.0.0.1:2256 dnk
     always: true
   tunnel-embed:
     run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -R 127.0.0.1:8771:127.0.0.1:8771 dnk

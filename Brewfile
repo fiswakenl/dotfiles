@@ -49,8 +49,6 @@ brew "py-spy"
 brew "python@3.11"
 # Rsync for cloud storage
 brew "rclone"
-# Universal proxy platform
-brew "sing-box"
 # Editor of encrypted files
 brew "sops"
 # SOund eXchange: universal sound sample translator
