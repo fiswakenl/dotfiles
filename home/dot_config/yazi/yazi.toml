@@ -1,0 +1,10 @@
+# Enter на тексте и коде — VS Code; остальное (картинки, PDF…) — как раньше, программой по умолчанию.
+[opener]
+code = [{ run = 'open -a "Visual Studio Code" "$@"', orphan = true, desc = "VS Code", for = "macos" }]
+
+[open]
+prepend_rules = [
+  { mime = "text/*", use = ["code", "open"] },
+  { mime = "application/{json,toml,yaml,x-yaml,xml,javascript,x-sh,x-shellscript,x-python,x-empty}", use = ["code", "open"] },
+  { mime = "inode/empty", use = ["code", "open"] },
+]
