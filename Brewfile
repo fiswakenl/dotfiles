@@ -35,6 +35,8 @@ brew "graphviz"
 brew "hf"
 # CLI wrapper for basic network utilities on macOS - ip command
 brew "iproute2mac"
+# Friendly wrapper for launchctl
+brew "lunchy-go"
 # Port scanning utility for large networks
 brew "nmap"
 # Open-source, cross-platform JavaScript runtime environment
