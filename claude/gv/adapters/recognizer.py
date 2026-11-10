@@ -74,16 +74,16 @@ class Recognizer(Adapter):
                 Utterances(self, UserTurnStrategies(stop=[turn, self.completion()]), stop_timeout=pause + 2)]
 
     async def keep_warm(self, classifier: BaseClassifier) -> None:
-        """Соединение с классификатором держим тёплым. Первое Pipecat открывает сам при запуске конвейера, а простаивающее
-        закрывает через 240 с — тогда первая пауза после перерыва ждала бы рукопожатия, 2–3 с. Раньше этого — пустой вопрос."""
+        """Соединение с классификатором держим тёплым: простаивающее закрывается через 240 с, и первый вопрос после перерыва
+        ждал бы рукопожатия — 1,5–3 с. Поэтому пустой вопрос сразу при запуске (иначе холодным выйдет первый настоящий) и раз в 200 с."""
         while True:
-            await asyncio.sleep(200)
             try:
                 t0 = time.monotonic()
                 await asyncio.wait_for(classifier.choice("привет", {"turn": TURN_COMPLETION_QUESTION}), 10)
                 log("turn.warm", s=round(time.monotonic() - t0, 2))
             except Exception as ex:  # noqa: BLE001 — не прогрелось: первая пауза просто подождёт
                 log("turn.warm.error", error=f"{type(ex).__name__}: {ex}")
+            await asyncio.sleep(200)
 
     def start(self) -> list:
         return [self.run()]
