@@ -235,7 +235,7 @@
   .gap.cut { color: #c9720a; font-weight: 600 }
   .gap.truth { box-shadow: inset 0 -2px 0 #2e9d57 }
   .gap.wrong { box-shadow: inset 0 -2px 0 #d64545; color: #d64545 }
-  .gap.sel { background: #1d1d1f; color: #fff }
+  .gap.sel, button.gap.sel:hover { background: #1d1d1f; color: #fff }
   .legend { line-height: 2.2; margin: -2px 0 10px }
   .insp { background: #fafafa }
   table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 13px }
