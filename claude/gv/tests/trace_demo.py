@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["sounddevice", "numpy", "pipecat-ai[deepgram]>=1.15,<2", "httpx[http2]"]
 # ///
-"""Живой прогон для страницы Decisions: настоящие Deepgram, Silero, Smart Turn, классификатор и ядро, но вместо микрофона — речь
+"""Живой прогон для страницы Decisions: настоящие Deepgram, классификатор и ядро, но вместо микрофона — речь
 из say, а вместо плагина и Claude — заглушка: запрос «думает» CLAUDE_S секунд, остановку принимает сразу. Сценарий — вопрос и,
 пока Claude над ним работает, его продолжение. Получается обычная запись запуска в ~/.claude/gv-trace/ и страница по ней.
 Платно (Deepgram и классификатор, копейки), поэтому не в наборе тестов — запускается руками:
@@ -20,9 +20,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 import journal  # noqa: E402
-import adapters.recognizer as recognizer  # noqa: E402
-from adapters.deepgram import Deepgram  # noqa: E402
-from adapters.recognizer import RATE  # noqa: E402
+import listen  # noqa: E402
 from core import Core  # noqa: E402
 
 # (что сказать, сколько молчать после)
@@ -36,7 +34,7 @@ def speech(text: str) -> bytes:
     with tempfile.TemporaryDirectory() as d:
         aiff, wav = Path(d, "a.aiff"), Path(d, "a.wav")
         subprocess.run(["say", "-v", "Milena", "-o", aiff, text], check=True)
-        subprocess.run(["afconvert", "-f", "WAVE", "-d", f"LEI16@{RATE}", "-c", "1", aiff, wav], check=True)
+        subprocess.run(["afconvert", "-f", "WAVE", "-d", f"LEI16@{listen.RATE}", "-c", "1", aiff, wav], check=True)
         with wave.open(str(wav)) as w:
             return w.readframes(w.getnframes())
 
@@ -65,15 +63,14 @@ async def plugin(core: Core) -> None:
 
 
 async def main() -> None:
-    recognizer.sd.RawInputStream = NoMic
-    adapter: Deepgram
-    core = Core(say=lambda text: adapter.say(text), emit=journal.emit, log=journal.log)
-    adapter = Deepgram(core)
+    listen.sd.RawInputStream = NoMic
+    core = Core(emit=journal.emit, log=journal.log)
+    ear = listen.Listen(core)
     journal.log("demo.start", script=[s for s, _ in SCRIPT])
-    tasks = [asyncio.create_task(adapter.run()), asyncio.create_task(plugin(core))]
-    await asyncio.sleep(3)  # модели загружены, сокет Deepgram открыт
+    tasks = [asyncio.create_task(ear.run()), asyncio.create_task(plugin(core))]
+    await asyncio.sleep(3)  # сокет Deepgram открыт, классификатор прогрет
     for text, pause in SCRIPT:
-        await adapter.mic.play(speech(text) + bytes(int(RATE * pause) * 2))
+        await ear.mic.play(speech(text) + bytes(int(listen.RATE * pause) * 2))
     await asyncio.sleep(2)
     for t in tasks:
         t.cancel()

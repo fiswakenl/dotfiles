@@ -3,7 +3,7 @@
 # Claude Code с модом чистки промпта: ~/.claude/cc — ссылка chezmoi на dotfiles/claude/cc, на маке и на сервере.
 # Функция, а не алиас: алиас не виден функциям ниже — zsh разбирает блок if целиком.
 ccm() { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 command claude --plugin-dir ~/.claude/cc "$@"; }
-# Голос через Gemini Live без чистки набранного руками (cc не грузим) (плагин gv: ~/.claude/gv — ссылка chezmoi на dotfiles/claude/gv).
+# Голос (Deepgram + OpenAI Decisions) без чистки набранного руками (cc не грузим) (плагин gv: ~/.claude/gv — ссылка chezmoi на dotfiles/claude/gv).
 ccg() {
   CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 \
   BUN_OPTIONS="${BUN_OPTIONS:+$BUN_OPTIONS }--preload=$HOME/.claude/gv/preload.mjs" \

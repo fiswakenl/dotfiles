@@ -1,18 +1,15 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["aiohttp", "websockets>=15", "python-socks[asyncio]", "sounddevice", "numpy", "pipecat-ai[deepgram]>=1.15,<2", "httpx[http2]"]
+# dependencies = ["aiohttp", "sounddevice", "numpy", "pipecat-ai[deepgram]>=1.15,<2", "httpx[http2]"]
 # ///
-"""Сервис GV: голосовой адаптер ⇄ сессия Claude Code. Поднимает плагин, сам не нужен.
-
-Адаптер — GV_VOICE (gemini, deepgram, openai; adapters/), его выбирает плагин из своих настроек.
+"""Сервис GV: слух (listen.py) ⇄ сессия Claude Code. Поднимает плагин, сам не нужен.
 
 Ручки (127.0.0.1:GV_PORT, по умолчанию 8790):
-    POST /call   {"name", "args"} — единственный вход снаружи: ask, quick (как вызов Gemini; с "sure" — решение оркестратора),
-                 utter {"text"} (законченная реплика на решение оркестратору), listen (речь вместо микрофона),
+    POST /call   {"name", "args"} — единственный вход снаружи: ask, quick {"text", "replaces"} (как реплика слуха),
                  turn {"working"} (начался или кончился ход Claude), rewound {"id", "removed"} (что стёр откат),
                  status, list, send, rewind, cancel (мост в окно Claude)
-    GET  /next   плагин забирает запрос {"id", "kind": ask|quick, "text", "rewind"}, остановку хода {"kind": "cancel", "id", "text"}
-                 или реплику на решение {"kind": "route", "text", "busy", "recent"}; ждёт до ?wait= секунд, 204 — пока ничего
+    GET  /next   плагин забирает запрос {"id", "kind": ask|quick, "text", "rewind"} или остановку хода {"kind": "cancel", "id", "text"};
+                 ждёт до ?wait= секунд, 204 — пока ничего
     POST /answer ?id=N, {"text"} или {"error"} — ответ на запрос; ask освобождает Claude
     POST /ping   плагин жив; пропал на PING_LOST секунд — сервис выходит сам
     POST /quit   сессия закрылась или пришла новая — выходим
@@ -20,11 +17,8 @@
 
 Номера запросов живут, пока жив процесс: каждый ответ /next несёт заголовок X-GV-Epoch — номер запуска. Плагин шлёт его обратно
 с /call и /answer; чужой номер — 409: запрос относится к прошлому запуску, и его номер здесь значит другое.
-
-GV_TEXT_ONLY=1 — вместо адаптера Gemini без сокета, микрофона и колонок: ответы Claude — события say (тесты таймингов).
 """
 import asyncio
-import itertools
 import json
 import os
 import signal
@@ -35,13 +29,12 @@ from pathlib import Path
 
 from aiohttp import web
 
-import adapters
 from core import Core
 from journal import emit, history, log, viewers
+from listen import Listen
 
 HERE = Path(__file__).resolve().parent
 PORT = int(os.environ.get("GV_PORT", 8790))
-VOICE = os.environ.get("GV_VOICE", "gemini")
 NEXT_WAIT = 25  # дольше /next не держим
 PING_LOST = 90
 BRIDGE = {"status", "list", "send", "rewind", "cancel"}
@@ -82,17 +75,11 @@ async def call(request: web.Request) -> web.Response:
     name, args = body.get("name", ""), body.get("args") or {}
     if name in ("ask", "quick"):
         result = core.call(name, args)
-    elif name == "utter":
-        core.utter(str(args.get("text") or ""))
-        result = "ok"
     elif name == "turn":
         core.claude(bool(args.get("working")))
         result = "ok"
     elif name == "rewound":
         core.rewound(int(args.get("id") or 0), [int(i) for i in args.get("removed") or []])
-        result = "ok"
-    elif name == "listen":  # речь идёт в своём темпе, вызов возвращается сразу
-        asyncio.create_task(voice.listen(args))
         result = "ok"
     elif name in BRIDGE:
         result = await bridge(name, args)
@@ -135,13 +122,13 @@ async def quit_(_: web.Request) -> web.Response:
 
 
 async def index(request: web.Request) -> web.StreamResponse:
-    """Страница; с заголовком Upgrade — её поток событий: сначала история и устройство канала, дальше по одному."""
+    """Страница; с заголовком Upgrade — её поток событий: сначала история, дальше по одному."""
     if request.headers.get("Upgrade", "").lower() != "websocket":
         return web.FileResponse(HERE / "page.html")
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     viewers.add(ws)
-    await ws.send_json({"history": history, "title": voice.title, "speaks": voice.speaks, "about": voice.about()})
+    await ws.send_json({"history": history})
     try:
         async for _ in ws:
             pass
@@ -228,16 +215,12 @@ async def claude_steps() -> None:
 
 
 async def watchdog() -> None:
-    """Раз в секунду: очередь речи (ход Gemini мог зависнуть); раз в 10 с — пинг плагина и правка кода (перезапуск).
-    Промпты и страницу читают при каждом использовании — их правка перезапуска не требует."""
-    # Только код самого сервиса: просмотрщики записей (*_view.py) правятся, пока он работает, и перезапускать его не должны.
-    watched = [*(f for f in HERE.glob("*.py") if not f.name.endswith("_view.py")), *HERE.glob("adapters/*.py"), OVERLAY]
+    """Раз в 10 с: пинг плагина и правка кода сервиса (перезапуск). Страницу читают при каждом открытии — её правка перезапуска
+    не требует; просмотрщик записей (*_view.py) правится, пока сервис работает, и перезапускать его не должен."""
+    watched = [*(f for f in HERE.glob("*.py") if not f.name.endswith("_view.py")), OVERLAY]
     stamp = {f: f.stat().st_mtime for f in watched}
-    for tick in itertools.count(1):
-        await asyncio.sleep(1)
-        core.pump()
-        if tick % 10:
-            continue
+    while True:
+        await asyncio.sleep(10)
         if time.monotonic() - S["ping"] > PING_LOST:
             log("exit", why=f"плагин не пинговал {PING_LOST} с")
             os._exit(0)
@@ -247,12 +230,12 @@ async def watchdog() -> None:
 
 
 async def main() -> None:
-    """Сначала порт, потом адаптер: второй запуск на занятом порту выходит, не открыв микрофон."""
-    global core, voice
+    """Сначала порт, потом слух: второй запуск на занятом порту выходит, не открыв микрофон."""
+    global core
     app = web.Application()
     app.add_routes([web.get("/", index), web.post("/call", call), web.get("/next", nxt), web.post("/answer", answer),
                     web.post("/ping", ping), web.post("/quit", quit_)])
-    core = Core(say=lambda text: voice.say(text), emit=emit, log=log)
+    core = Core(emit=emit, log=log)
     runner = web.AppRunner(app)
     await runner.setup()
     try:
@@ -262,16 +245,14 @@ async def main() -> None:
         return
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, lambda signum, _f: (log("exit", why=f"сигнал {signal.Signals(signum).name}"), os._exit(0)))
-    voice = adapters.make(VOICE, core)
-    log("start", port=PORT, voice=VOICE, adapter=voice.title, pause_ms=voice.pause_ms, epoch=EPOCH)
-    tasks = [asyncio.create_task(c) for c in (watchdog(), claude_steps(), *voice.start())]  # noqa: F841 — держим ссылки
+    log("start", port=PORT, epoch=EPOCH)
+    tasks = [asyncio.create_task(c) for c in (watchdog(), claude_steps(), Listen(core).run())]  # noqa: F841 — держим ссылки
     for t in tasks:  # упавшая задача иначе молчит: голос не работает, а в журнале пусто
         t.add_done_callback(lambda t: t.cancelled() or not t.exception() or log("task.error", error=f"{type(t.exception()).__name__}: {t.exception()}"))
     await asyncio.Event().wait()
 
 
 core: Core
-voice: adapters.Adapter
 
 if __name__ == "__main__":
     asyncio.run(main())
