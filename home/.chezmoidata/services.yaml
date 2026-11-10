@@ -5,8 +5,12 @@ services:
   kuper:
     run: exec /opt/homebrew/bin/python3 $HOME/Documents/store/dnk/tools/kuper/kuper_server.py
     port: 2256
-  tunnel-proxy:
-    run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -L 127.0.0.1:1080:127.0.0.1:1080 -L 127.0.0.1:8444:127.0.0.1:8444 dnk
+  proxy:
+    run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -L 127.0.0.1:1080:127.0.0.1:1080 dnk
+    # run: exec sing-box run -c $HOME/.config/sing-box/paid.json
+    always: true
+  tunnel-mtg:
+    run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -L 127.0.0.1:8444:127.0.0.1:8444 dnk
     always: true
   tunnel-kbju:
     run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -L 127.0.0.1:8782:127.0.0.1:2256 dnk
