@@ -141,9 +141,9 @@
             <p class="text">
               {#each r.chunks as c, i}
                 {@const g = gap(r, i)}
-                <span class="chunk m{m[i] % 2}">{c.text}</span>{#if g}<button class="gap" class:truth={g.truth} class:wrong={g.wrong}
+                <span class="chunk m{m[i] % 2}">{c.text}</span>{#if g}<button class="gap" class:glued={g.step >= 0 && !g.cut} class:cut={g.cut} class:truth={g.truth} class:wrong={g.wrong}
                     class:sel={sel?.kind === k && sel?.i === i} onclick={() => (sel = { kind: k, i })}
-                    title="пауза {sec(g.len)}{r.turns[i] ? ' · мысль ' + TURN[r.turns[i][0]] : ''}{g.step >= 0 ? (g.cut ? ' · отдельно' : ' · склеил') : ''}" aria-label="пауза"></button>{/if}
+                    title="пауза {sec(g.len)}{r.turns[i] ? ' · мысль ' + TURN[r.turns[i][0]] : ''}{g.step >= 0 ? (g.cut ? ' · отдельно' : ' · склеил') : ''}">{g.step >= 0 && !g.cut ? '⌒ ' : ''}{sec(g.len)}</button>{/if}
               {/each}
             </p>
           {:else}
@@ -152,10 +152,13 @@
         </section>
       {/each}
       <div class="legend mute">
-        цвет — сообщение, смена цвета — разрыв ·
-        <span class="gap truth"></span> разрыв по разметке ·
-        <span class="gap wrong"></span> не совпало с разметкой ·
-        клик между кусками — пауза, звук и варианты
+        цвет — сообщение ·
+        <span class="gap">0,7 с</span> пауза ·
+        <span class="gap glued">⌒ 0,7 с</span> спросили, склеил ·
+        <span class="gap cut">0,7 с</span> спросили, отдельно ·
+        <span class="gap truth">0,7 с</span> разрыв по разметке ·
+        <span class="gap wrong">0,7 с</span> не совпало ·
+        клик по паузе — звук и варианты
       </div>
 
       {#if selG}
@@ -222,15 +225,17 @@
   .src { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
   .badge { font-size: 12px; font-weight: 600; padding: 0 8px; border-radius: 99px; background: #fde2e1; color: #b3261e }
   .badge.good, .cnt.good { background: #e3f6e8; color: #1e7d3a }
-  .text { line-height: 1.9; margin: 4px 0 0 }
+  .text { line-height: 2; margin: 4px 0 0 }
   .chunk { border-radius: 3px; padding: 2px 0 }
   .chunk.m0 { background: #e8f0fc }
   .chunk.m1 { background: #f6e3c8 }
-  .gap { display: inline-block; box-sizing: content-box; width: 3px; height: 1.05em; padding: 0 4px; margin: 0; border: 0; border-radius: 2px; background: #e3e3e8; background-clip: content-box; vertical-align: -0.15em }
-  button.gap:hover { background-color: #8e8e93 }
-  .gap.truth { background-color: #2e9d57 }
-  .gap.wrong { background-color: #d64545 }
-  .gap.sel { background-color: #1d1d1f }
+  .gap { font-size: 11px; line-height: 16px; padding: 0 3px; margin: 0 1px; border: 0; border-radius: 3px; background: none; color: #a0a0a8; font-variant-numeric: tabular-nums }
+  button.gap:hover { color: #1d1d1f }
+  .gap.glued { color: #3a7bd5; font-weight: 600 }
+  .gap.cut { color: #c9720a; font-weight: 600 }
+  .gap.truth { box-shadow: inset 0 -2px 0 #2e9d57 }
+  .gap.wrong { box-shadow: inset 0 -2px 0 #d64545; color: #d64545 }
+  .gap.sel { background: #1d1d1f; color: #fff }
   .legend { line-height: 2.2; margin: -2px 0 10px }
   .insp { background: #fafafa }
   table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 13px }
