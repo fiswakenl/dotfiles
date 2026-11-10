@@ -5,8 +5,6 @@ tap "typewhisper/tap", trusted: { casks: ["typewhisper"] }
 brew "age"
 # Bourne-Again SHell, a UNIX command interpreter
 brew "bash"
-# Simple command-line SSH tunnel manager that just works
-brew "boring"
 # Manage your dotfiles across multiple diverse machines, securely
 brew "chezmoi"
 # Container runtimes on MacOS (and Linux) with minimal setup
@@ -35,8 +33,6 @@ brew "graphviz"
 brew "hf"
 # CLI wrapper for basic network utilities on macOS - ip command
 brew "iproute2mac"
-# Friendly wrapper for launchctl
-brew "lunchy-go"
 # Port scanning utility for large networks
 brew "nmap"
 # Open-source, cross-platform JavaScript runtime environment
