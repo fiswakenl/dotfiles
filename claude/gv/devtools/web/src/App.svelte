@@ -35,10 +35,11 @@
     if (!r?.chunks || !cfg.labeled) return null
     return r.chunks.every((_, i) => !gap(r, i)?.wrong)
   }
-  // номер сообщения для каждого куска
-  function msgs(r) {
-    let n = 0
-    return r.chunks.map((_, i) => { const g = i ? gap(r, i - 1) : null; if (g?.cut) n++; return n })
+  // сообщения: списки номеров кусков, как их получит Claude
+  function groups(r) {
+    const out = [[]]
+    r.chunks.forEach((_, i) => { if (i && gap(r, i - 1)?.cut) out.push([]); out.at(-1).push(i) })
+    return out
   }
   const total = (v) => Object.keys(KINDS).filter((k) => score(results[key(k, v)])).length
 
@@ -129,36 +130,31 @@
         {@const r = results[key(k, vi)]}
         {@const s = score(r)}
         <section>
-          <div class="src">
-            <b>{name}</b> <span class="mute">{HINT[k]}</span>
-            {#if s != null}<span class="badge" class:good={s}>{s ? '✓ делит верно' : '✗ не так'}</span>{/if}
-            {#if r?.steps}<span class="mute">· {1 + r.steps.filter((x) => !glue(x.p)).length} сообщ.</span>{/if}
-          </div>
+          <h2 title={HINT[k]}>{name}{#if s != null}<span class="mark" class:good={s}>{s ? '✓' : '✗'}</span>{/if}</h2>
           {#if r?.error}
             <button onclick={replay}>прогнать звук через Deepgram (платно, ~минута)</button>
           {:else if r?.chunks}
-            {@const m = msgs(r)}
-            <p class="text">
-              {#each r.chunks as c, i}
-                {@const g = gap(r, i)}
-                <span class="chunk m{m[i] % 2}">{c.text}</span>{#if g}<button class="gap" class:glued={g.step >= 0 && !g.cut} class:cut={g.cut} class:truth={g.truth} class:wrong={g.wrong}
-                    class:sel={sel?.kind === k && sel?.i === i} onclick={() => (sel = { kind: k, i })}
-                    title="пауза {sec(g.len)}{r.turns[i] ? ' · мысль ' + TURN[r.turns[i][0]] : ''}{g.step >= 0 ? (g.cut ? ' · отдельно' : ' · склеил') : ''}">{g.step >= 0 && !g.cut ? '⌒ ' : ''}{sec(g.len)}</button>{/if}
-              {/each}
-            </p>
+            {#each groups(r) as grp, n}
+              {#if n}
+                {@const g = gap(r, grp[0] - 1)}
+                <button class="brk" class:good={cfg.labeled && !g.wrong} class:wrong={g.wrong}
+                  class:sel={sel?.kind === k && sel?.i === grp[0] - 1} onclick={() => (sel = { kind: k, i: grp[0] - 1 })}><span>{sec(g.len)}</span></button>
+              {/if}
+              <p class="msg">
+                {#each grp as i, j}
+                  {r.chunks[i].text}{#if j < grp.length - 1}{@const g = gap(r, i)}<button class="gap" class:glued={g.step >= 0} class:wrong={g.wrong}
+                      class:sel={sel?.kind === k && sel?.i === i} onclick={() => (sel = { kind: k, i })}>{g.step >= 0 ? '⌒' : ''}{sec(g.len)}</button>{/if}
+                {/each}
+              </p>
+            {/each}
           {:else}
             <span class="mute">…</span>
           {/if}
         </section>
       {/each}
       <div class="legend mute">
-        <span class="chunk m0">голубой</span> и <span class="chunk m1">песочный</span> — соседние сообщения, смена цвета — разрыв ·
-        <span class="gap">0,7 с</span> пауза ·
-        <span class="gap glued">⌒ 0,7 с</span> спросили, склеил ·
-        <span class="gap cut">0,7 с</span> спросили, отдельно ·
-        <span class="gap truth">0,7 с</span> разрыв по разметке ·
-        <span class="gap wrong">0,7 с</span> не совпало ·
-        клик по паузе — звук и варианты
+        абзац — сообщение · <span class="gap">0,7 с</span> пауза · <span class="gap glued">⌒0,7 с</span> спросили и склеил ·
+        линия — разрыв: <span class="gap good">как в разметке</span>, <span class="gap wrong">ошибка</span> · красная пауза — тут должен быть разрыв · клик по паузе — звук и варианты
       </div>
 
       {#if selG}
@@ -221,21 +217,26 @@
   button { font: inherit; font-size: 13px; border: 1px solid #d2d2d7; background: #fff; border-radius: 7px; padding: 3px 9px; cursor: pointer }
   button.on { background: #1d1d1f; color: #fff; border-color: #1d1d1f }
   .tip { background: #fff7e0; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; font-size: 13px }
-  section { border: 1px solid #e5e5ea; border-radius: 10px; padding: 8px 12px; margin-bottom: 10px }
+  section { margin-bottom: 22px }
+  section.insp { border: 1px solid #e5e5ea; border-radius: 10px; padding: 8px 12px }
+  h2 { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #8e8e93; margin: 0 0 6px; cursor: help }
+  .mark { margin-left: 6px; color: #d64545; font-size: 13px }
+  .mark.good { color: #2e9d57 }
   .src { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
-  .badge { font-size: 12px; font-weight: 600; padding: 0 8px; border-radius: 99px; background: #fde2e1; color: #b3261e }
-  .badge.good, .cnt.good { background: #e3f6e8; color: #1e7d3a }
-  .text { line-height: 2; margin: 4px 0 0 }
-  .chunk { border-radius: 3px; padding: 2px 0 }
-  .chunk.m0 { background: #e8f0fc }
-  .chunk.m1 { background: #f6e3c8 }
-  .gap { font-size: 11px; line-height: 16px; padding: 0 6px; margin: 0 2px; border: 0; border-radius: 99px; background: #ececf0; color: #6e6e73; font-variant-numeric: tabular-nums }
-  .gap.glued { background: #3a7bd5; color: #fff; font-weight: 600 }
-  .gap.cut { background: #e08a1e; color: #fff; font-weight: 600 }
-  .gap.truth { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #2e9d57 }
-  .gap.wrong { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #d64545 }
-  .gap.sel { background: #1d1d1f; color: #fff }
-  .legend { line-height: 2.2; margin: -2px 0 10px }
+  .cnt.good { background: #e3f6e8; color: #1e7d3a }
+  .msg { margin: 0; font-size: 15px; line-height: 1.7; max-width: 740px }
+  .gap { font-size: 10.5px; padding: 0 3px; margin: 0 3px; border: 0; border-radius: 3px; background: none; color: #b4b4bc; font-variant-numeric: tabular-nums; vertical-align: 1px }
+  button.gap:hover, .brk:hover span { color: #1d1d1f }
+  .gap.glued { color: #3a7bd5; font-weight: 600 }
+  .gap.good { color: #2e9d57 }
+  .gap.wrong { color: #d64545; font-weight: 600 }
+  .gap.sel, button.gap.sel:hover { background: #1d1d1f; color: #fff }
+  .brk { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 740px; padding: 3px 0; border: 0; background: none; color: #b4b4bc; font-size: 10.5px; font-variant-numeric: tabular-nums }
+  .brk::before, .brk::after { content: ''; flex: 1; height: 1px; background: currentColor; opacity: .45 }
+  .brk.good { color: #2e9d57 }
+  .brk.wrong { color: #d64545 }
+  .brk.sel span { background: #1d1d1f; color: #fff; border-radius: 3px; padding: 0 3px }
+  .legend { line-height: 1.8; margin: 0 0 14px }
   .insp { background: #fafafa }
   table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 13px }
   td { padding: 3px 6px }
