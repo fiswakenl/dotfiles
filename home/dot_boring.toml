@@ -1,0 +1,38 @@
+# Туннели мака: boring list — что работает, boring open ИМЯ | -a — поднять, boring close ИМЯ | -a — погасить.
+# Хосты — из ~/.ssh/config. mode = "remote" — обратный (ssh -R): сервер открывает порт remote и ведёт его в local на маке.
+
+# прокси 1080 (vpn-proxy на dnk) и 8444
+[[tunnels]]
+name = "proxy"
+local = "127.0.0.1:1080"
+remote = "127.0.0.1:1080"
+host = "dnk"
+
+[[tunnels]]
+name = "proxy-8444"
+local = "127.0.0.1:8444"
+remote = "127.0.0.1:8444"
+host = "dnk"
+
+# КБЖУ на dnk → localhost:8782
+[[tunnels]]
+name = "kbju"
+local = "127.0.0.1:8782"
+remote = "127.0.0.1:2256"
+host = "dnk"
+
+# серверу — bge-m3 и реранкер мака (sufler-embed, :8771)
+[[tunnels]]
+name = "embed"
+mode = "remote"
+local = "127.0.0.1:8771"
+remote = "127.0.0.1:8771"
+host = "dnk"
+
+# dev → ml4dbs через мак: порт 2222 на dev ведёт в ml4dbs:22 (LC_ML4DBS=2222 в ~/.ssh/config)
+[[tunnels]]
+name = "ml4dbs"
+mode = "remote"
+local = "45.145.190.28:22"
+remote = "127.0.0.1:2222"
+host = "dev"
