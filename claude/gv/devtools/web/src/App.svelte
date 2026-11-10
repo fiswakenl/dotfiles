@@ -143,7 +143,7 @@
               <p class="msg">
                 {#each grp as i, j}
                   {r.chunks[i].text}{#if j < grp.length - 1}{@const g = gap(r, i)}<button class="gap" class:glued={g.step >= 0} class:wrong={g.wrong}
-                      class:sel={sel?.kind === k && sel?.i === i} onclick={() => (sel = { kind: k, i })}>{g.step >= 0 ? '⌒' : ''}{sec(g.len)}</button>{/if}
+                      class:sel={sel?.kind === k && sel?.i === i} onclick={() => (sel = { kind: k, i })}>{g.step >= 0 ? '⌒ ' : ''}{sec(g.len)}</button>{/if}
                 {/each}
               </p>
             {/each}
@@ -153,7 +153,7 @@
         </section>
       {/each}
       <div class="legend mute">
-        абзац — сообщение · <span class="gap">0,7 с</span> пауза · <span class="gap glued">⌒0,7 с</span> спросили и склеил ·
+        абзац — сообщение · <span class="gap">0,7 с</span> пауза · <span class="gap glued">⌒ 0,7 с</span> спросили и склеил ·
         линия — разрыв: <span class="gap good">как в разметке</span>, <span class="gap wrong">ошибка</span> · красная пауза — тут должен быть разрыв · клик по паузе — звук и варианты
       </div>
 
@@ -224,18 +224,18 @@
   .mark.good { color: #2e9d57 }
   .src { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
   .cnt.good { background: #e3f6e8; color: #1e7d3a }
-  .msg { margin: 0; font-size: 15px; line-height: 1.7; max-width: 740px }
-  .gap { font-size: 10.5px; padding: 0 3px; margin: 0 3px; border: 0; border-radius: 3px; background: none; color: #b4b4bc; font-variant-numeric: tabular-nums; vertical-align: 1px }
-  button.gap:hover, .brk:hover span { color: #1d1d1f }
-  .gap.glued { color: #3a7bd5; font-weight: 600 }
-  .gap.good { color: #2e9d57 }
-  .gap.wrong { color: #d64545; font-weight: 600 }
-  .gap.sel, button.gap.sel:hover { background: #1d1d1f; color: #fff }
-  .brk { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 740px; padding: 3px 0; border: 0; background: none; color: #b4b4bc; font-size: 10.5px; font-variant-numeric: tabular-nums }
-  .brk::before, .brk::after { content: ''; flex: 1; height: 1px; background: currentColor; opacity: .45 }
-  .brk.good { color: #2e9d57 }
-  .brk.wrong { color: #d64545 }
-  .brk.sel span { background: #1d1d1f; color: #fff; border-radius: 3px; padding: 0 3px }
+  .msg { margin: 0; font-size: 15px; line-height: 1.9; max-width: 740px }
+  .gap, .brk span { font-size: 11px; line-height: 17px; padding: 0 7px; border: 0; border-radius: 99px; background: #ececf0; color: #6e6e73; font-variant-numeric: tabular-nums }
+  .gap { margin: 0 4px; vertical-align: 1px }
+  button.gap:hover, .brk:hover span { filter: brightness(.92) }
+  .gap.glued { background: #3a7bd5; color: #fff; font-weight: 600 }
+  .gap.good, .brk.good span { background: #2e9d57; color: #fff; font-weight: 600 }
+  .gap.wrong, .brk.wrong span { background: #d64545; color: #fff; font-weight: 600 }
+  .gap.sel, .brk.sel span { background: #1d1d1f; color: #fff }
+  .brk { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 740px; padding: 4px 0; border: 0; background: none; color: #c7c7cc }
+  .brk::before, .brk::after { content: ''; flex: 1; height: 1px; background: currentColor }
+  .brk.good { color: #9ed3b1 }
+  .brk.wrong { color: #eda3a3 }
   .legend { line-height: 1.8; margin: 0 0 14px }
   .insp { background: #fafafa }
   table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 13px }
