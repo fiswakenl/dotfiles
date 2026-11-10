@@ -1,6 +1,7 @@
-# Обзор того, что запущено. Службы и туннели — ~/dotfiles/home/.chezmoidata/services.yaml.
+# Обзор того, что запущено. Службы — ~/dotfiles/home/.chezmoidata/services.yaml, туннели — boring (~/.boring.toml).
 mac-status() {
     echo "== расходится с dotfiles =="; chezmoi status | sed 's/^/  /'
+    echo "== туннели =="; boring list 2>/dev/null | sed 's/^/  /'
     echo "== службы launchd =="
     local names=" $(ls ~/.local/state/dotfiles/services 2>/dev/null | tr '\n' ' ') "  # службы из services.yaml
     launchctl list | awk -v n="$names" 'NR>1 && (index(n, " " $3 " ") || $3 ~ /^com\.iykisoba\./) {printf "  %-24s %s\n", $3, ($1=="-" ? "ждёт, код " $2 : "работает, pid " $1)}' | sort

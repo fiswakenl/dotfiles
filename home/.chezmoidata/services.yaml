@@ -1,13 +1,4 @@
-# Службы мака. Из этого списка скрипт .chezmoiscripts/darwin/run_onchange_after_20-services.sh собирает
-# ~/Library/LaunchAgents/<имя>.plist и загружает в launchd; убранную отсюда службу — выгружает и удаляет.
-# Выключить — закомментировать и chezmoi apply. Что запущено — mac-status; разово: launchctl kickstart -k | kill TERM gui/$(id -u)/ИМЯ.
-#
-#   run     команда (sh -c; PATH — ~/.local/bin и Homebrew; $HOME раскрывается); exec — чтобы порт достался самой службе
-#   port    launchd держит порт 127.0.0.1:port и запускает службу по первому обращению; без port — запуск при входе
-#   always  держать запущенной: упала — поднять снова
-#   env     переменные окружения
-#   dir     рабочая папка
-# Лог — ~/Library/Logs/<имя>.log.
+# Службы мака: run — команда, port — запуск по обращению к порту, always — держать запущенной. Выключить — закомментировать, chezmoi apply.
 services:
   callrec:
     run: S=$HOME/Documents/store/dnk/tools/callrec/callrec_server.py; uv sync --quiet --script "$S"; exec "$(uv python find --script "$S")" "$S"
@@ -15,18 +6,5 @@ services:
   kuper:
     run: exec /opt/homebrew/bin/python3 $HOME/Documents/store/dnk/tools/kuper/kuper_server.py
     port: 2256
-
-  # Туннели: ssh держит launchd (always) — оборвался, поднимет снова. Выключены, пока лежит сервер: раскомментируй и chezmoi apply.
-  # -L — порт открывается на маке, -R — на сервере и ведёт в мак. Хосты — из ~/.ssh/config.
-  # tunnel-proxy:  # прокси vpn-proxy на dnk (127.0.0.1:1080) и :8444
-  #   run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -L 127.0.0.1:1080:127.0.0.1:1080 -L 127.0.0.1:8444:127.0.0.1:8444 dnk
-  #   always: true
-  # tunnel-kbju:   # КБЖУ на dnk → localhost:8782
-  #   run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -L 127.0.0.1:8782:127.0.0.1:2256 dnk
-  #   always: true
-  # tunnel-embed:  # серверу — bge-m3 и реранкер мака (sufler-embed, :8771)
-  #   run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -R 127.0.0.1:8771:127.0.0.1:8771 dnk
-  #   always: true
-  # tunnel-ml4dbs: # dev → ml4dbs через мак: порт 2222 на dev ведёт в ml4dbs:22 (LC_ML4DBS=2222 в ~/.ssh/config)
-  #   run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -R 127.0.0.1:2222:45.145.190.28:22 dev
-  #   always: true
+  nora:  # туннели из ~/.boring.toml с group = "autostart"
+    run: exec boring open -g autostart

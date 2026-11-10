@@ -1,6 +1,9 @@
 #!/bin/sh
 # Службы из .chezmoidata/services.yaml → ~/Library/LaunchAgents/<имя>.plist. launchd не любит ссылки — plist копии.
 # Загружает новые и изменённые, выгружает и удаляет убранные из списка (их имена помнит ~/.local/state/dotfiles/services).
+# Поля службы: run — команда (sh -c, PATH с ~/.local/bin и Homebrew; exec — чтобы порт достался самой службе);
+# port — launchd держит 127.0.0.1:port и будит службу первым обращением, без port — запуск при входе; always — поднимать упавшую;
+# env — переменные; dir — рабочая папка. Лог — ~/Library/Logs/<имя>.log.
 # список: {{ .services | toJson | sha256sum }}
 agents="$HOME/Library/LaunchAgents"; state="$HOME/.local/state/dotfiles/services"; uid=$(id -u)
 mkdir -p "$agents" "$state" "$HOME/Library/Logs"
