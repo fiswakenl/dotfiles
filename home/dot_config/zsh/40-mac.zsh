@@ -1,4 +1,4 @@
-# Обзор того, что запущено. Службы и туннели — ~/dotfiles/home/.chezmoidata/services.yaml.
+# Обзор того, что запущено. Службы и туннели — ~/.config/services.yaml.
 mac-status() {
     echo "== расходится с dotfiles =="; chezmoi status | sed 's/^/  /'
     echo "== службы launchd =="
