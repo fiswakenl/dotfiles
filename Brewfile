@@ -5,6 +5,8 @@ tap "typewhisper/tap", trusted: { casks: ["typewhisper"] }
 brew "age"
 # Bourne-Again SHell, a UNIX command interpreter
 brew "bash"
+# Simple command-line SSH tunnel manager that just works
+brew "boring"
 # Manage your dotfiles across multiple diverse machines, securely
 brew "chezmoi"
 # Container runtimes on MacOS (and Linux) with minimal setup
