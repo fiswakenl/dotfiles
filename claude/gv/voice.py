@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["aiohttp", "sounddevice", "numpy", "pipecat-ai[deepgram]>=1.15,<2", "httpx[http2]"]
+# dependencies = ["aiohttp", "sounddevice", "numpy", "livekit-agents>=1.8.11,<2", "livekit-plugins-deepgram>=1.8.11,<2", "livekit-plugins-openai>=1.8.11,<2"]
 # ///
 """Сервис GV: слух (listen.py) ⇄ сессия Claude Code. Поднимает плагин, сам не нужен.
 

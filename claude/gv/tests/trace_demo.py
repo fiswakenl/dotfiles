@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["sounddevice", "numpy", "pipecat-ai[deepgram]>=1.15,<2", "httpx[http2]"]
+# dependencies = ["sounddevice", "numpy", "livekit-agents>=1.8.11,<2", "livekit-plugins-deepgram>=1.8.11,<2", "livekit-plugins-openai>=1.8.11,<2"]
 # ///
 """Живой прогон для страницы Decisions: настоящие Deepgram, классификатор и ядро, но вместо микрофона — речь
 из say, а вместо плагина и Claude — заглушка: запрос «думает» CLAUDE_S секунд, остановку принимает сразу. Сценарий — вопрос и,
