@@ -7,11 +7,11 @@
   const TURN = { complete: 'закончена', short: 'не закончена', long: 'подождать' }
   // join — модель считает, что сообщение то же (⌒); split — что тут граница (┃)
   const QS = {
-    turn: { name: 'Мысль закончена?', when: 'замолчал', join: 'ждёт', split: 'закрыл фразу', extra: 'закрыл посреди сообщения', miss: 'не закрыл, хотя сообщение кончилось',
+    turn: { name: 'Мысль закончена?', when: 'замолчал', join: 'ждёт', split: 'закрыл фразу',
       hint: 'Deepgram услышал конец речи. Модель решает: фраза закончена — закрыть её, или человек договорит — подождать.' },
-    route: { name: 'Продолжение?', when: 'фраза закрыта', join: 'склеил', split: 'новое сообщение', extra: 'разорвал одно сообщение', miss: 'склеил два разных сообщения',
+    route: { name: 'Продолжение?', when: 'фраза закрыта', join: 'склеил', split: 'новое сообщение',
       hint: 'Фраза закрыта. Модель решает: дописать её к прошлому сообщению или отправить отдельным.' },
-    early: { name: 'Начало продолжения?', when: 'Claude занят', join: 'остановил Claude', split: 'не тронул', extra: 'не остановил, хотя это продолжение', miss: 'остановил, хотя это новое сообщение',
+    early: { name: 'Начало продолжения?', when: 'Claude занят', join: 'остановил Claude', split: 'не тронул',
       hint: 'Claude работает над прошлой фразой, а человек заговорил снова. По первым словам модель решает: это продолжение — остановить Claude сразу, или новая мысль — не трогать.' },
   }
   const NEAR = 0.5 // метка разметки относится к паузе, если лежит в ней или рядом (секунды)
@@ -156,9 +156,9 @@
     <span class="help" tabindex="0">?<div class="legend">
         <span><i class="gap">0,7 с</i> не спрашивали</span>
         <span><i class="gap glued">⌒ 0,7 с</i> {Q.join}</span>
-        <span><i class="gap cut good">┃ 0,7 с</i> {Q.split} — верно</span>
-        <span><i class="gap cut wrong">┃ 0,7 с</i> {Q.extra}</span>
-        <span><i class="gap wrong">⌒ 0,7 с</i> {Q.miss}</span>
+        <span><i class="gap cut good">┃ 0,7 с</i> {Q.split}</span>
+        <span><i class="gap cut wrong">┃ 0,7 с</i> зря</span>
+        <span><i class="gap wrong">⌒ 0,7 с</i> пропустил границу</span>
       </div></span>
     <button class="ghost" onclick={() => play(0)}>▶ Отрезок</button>
     <button class="primary" onclick={run}>Прогнать ⌘↵</button>
