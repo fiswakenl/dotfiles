@@ -1,5 +1,5 @@
 # Туннели мака: boring list — что работает, boring open ИМЯ | -a — поднять, boring close ИМЯ | -a — погасить.
-# group = "autostart" — поднимать при входе (служба launchd com.iykisoba.boring); сейчас выключено, пока лежит сервер.
+# group = "autostart" — поднимать при входе (служба launchd nora); сейчас выключено, пока лежит сервер.
 # Хосты — из ~/.ssh/config. mode = "remote" — обратный (ssh -R): сервер открывает порт remote и ведёт его в local на маке.
 
 # прокси 1080 (vpn-proxy на dnk) и 8444
