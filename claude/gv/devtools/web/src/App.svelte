@@ -120,44 +120,50 @@
   <div class="grid">
     <aside>
       <div class="pane">
-        <h2>Варианты промпта</h2>
-        <p class="note">Промпт спрашивает классификатор на каждой паузе: новая реплика — продолжение прошлой или новое сообщение? Справа — результат выбранного варианта.</p>
+        <div class="pane-h">
+          <h2 title="Промпт спрашивает классификатор на каждой паузе: новая реплика — продолжение прошлой или новое сообщение?">Варианты промпта</h2>
+          <button class="mini" onclick={add} title="Новый вариант на основе выбранного">+ новый</button>
+        </div>
         {#each cfg.prompts as p, v}
           <button class="item" class:on={v === vi} onclick={() => (vi = v)}>
             <span>{p.name}</span>
-            {#if cfg.labeled}<span class="cnt" class:good={total(v) === 3}>верно в {total(v)} из 3 текстов</span>{/if}
+            {#if cfg.labeled}<span class="cnt" class:good={total(v) === 3} title="Делит как в разметке в {total(v)} из 3 текстов справа">{total(v)}/3</span>{/if}
           </button>
         {/each}
-        <button class="item add" onclick={add}><span>Добавить вариант из выбранного</span><span>+</span></button>
-        <p class="note">Три текста — это три вида одной диктовки справа: «как есть», «без знаков», «звук заново». Каждый прогнан один раз, это не повторы на стабильность.</p>
       </div>
 
       <div class="pane">
-        <h2>Промпт</h2>
+        <div class="pane-h"><h2>Промпт</h2><button class="mini danger" onclick={drop}>удалить</button></div>
         <input class="name" bind:value={cfg.prompts[vi].name} oninput={() => (dirty = true)} placeholder="Название варианта" />
-        <textarea bind:value={cfg.prompts[vi].text} oninput={() => (dirty = true)} onkeydown={keys} rows="10" placeholder="Текст промпта"></textarea>
+        <textarea bind:value={cfg.prompts[vi].text} oninput={() => (dirty = true)} onkeydown={keys} rows="9" placeholder="Текст промпта"></textarea>
         <div class="kv"><span>Реплики подаются</span>
           <div class="seg">{#each cfg.inputs as i}<button class:on={input === i} onclick={() => setInput(i)}>{i}</button>{/each}</div>
         </div>
-        <div class="kv"><span>Этот вариант</span><button class="danger" onclick={drop}>Удалить</button></div>
       </div>
 
       <div class="pane">
-        <details><summary>Второй вопрос — «мысль закончена?»</summary><pre>{cfg.turn}</pre></details>
+        <details><summary>Вопрос «мысль закончена?»</summary><pre>{cfg.turn}</pre></details>
       </div>
     </aside>
 
     <main>
+      <div class="legend">
+        <span><i class="gap">0,7 с</i> пауза</span>
+        <span><i class="gap glued">⌒ 0,7 с</i> склеил</span>
+        <span><i class="gap cut good">┃ 0,7 с</i> разрыв верный</span>
+        <span><i class="gap cut wrong">┃ 0,7 с</i> лишний</span>
+        <span><i class="gap wrong">0,7 с</i> пропущен</span>
+      </div>
       {#if !cfg.labeled}
-        <div class="tip">Сначала разметь, где на самом деле начинается новое сообщение: клик по паузе → «тут новое сообщение». Тогда варианты будут считаться сами.</div>
+        <div class="tip">Сначала разметь, где начинается новое сообщение: клик по паузе → «тут новое сообщение».</div>
       {/if}
       {#each Object.entries(KINDS) as [k, name]}
         {@const r = results[key(k, vi)]}
         {@const s = score(r)}
         <section>
           <div class="sec-h">
-            <h2>{name}</h2><span class="dim">{HINT[k]}</span><span class="grow"></span>
-            {#if s != null}<span class="badge" class:good={s}>{s ? 'делит верно' : 'делит не так'}</span>{/if}
+            <h2 title={HINT[k]}>{name}</h2>
+            {#if s != null}<span class="mark" class:good={s}>{s ? '✓' : '✗'}</span>{/if}
           </div>
           {#if r?.error}
             <button onclick={replay}>Прогнать звук через Deepgram (платно, ~минута)</button>
@@ -176,11 +182,12 @@
       {/each}
 
       {#if selG}
-        <section>
+        <div class="drawer">
           <div class="sec-h">
             <h2>Пауза {sec(selG.len)}</h2><span class="dim">{KINDS[sel.kind]}</span><span class="grow"></span>
             <label class="check"><input type="checkbox" checked={selG.truth} onchange={() => toggleTruth(selG)} /> тут новое сообщение</label>
             <button onclick={() => play(selG.from - 2, selG.to + 2)}>▶ Послушать</button>
+            <button class="ghost" onclick={() => (sel = null)} title="Закрыть">✕</button>
           </div>
           {#if selG.step >= 0}
             <table>
@@ -195,22 +202,12 @@
                 {/each}
               </tbody>
             </table>
-            <div class="dim small">Вход классификатору, вариант «{cfg.prompts[vi].name}»</div>
-            <pre>{selR.steps.find((x) => x.at === sel.i)?.input}</pre>
+            <details><summary class="dim small">Что ушло классификатору — «{cfg.prompts[vi].name}»</summary><pre>{selR.steps.find((x) => x.at === sel.i)?.input}</pre></details>
           {:else}
             <div class="dim">Здесь реплика не закрылась{selR.turns[sel.i] ? ` — «мысль закончена?»: ${TURN[selR.turns[sel.i][0]]} ${f(selR.turns[sel.i][1])}` : ' — Deepgram паузы не услышал'}, поэтому «продолжение?» тут не спрашивали.</div>
           {/if}
-        </section>
+        </div>
       {/if}
-
-      <div class="legend">
-        <span class="gap">0,7 с</span><span>пауза</span>
-        <span class="gap glued">⌒ 0,7 с</span><span>спросили и склеил</span>
-        <span class="gap cut good">┃ 0,7 с</span><span>разрыв, как в разметке</span>
-        <span class="gap cut wrong">┃ 0,7 с</span><span>лишний разрыв</span>
-        <span class="gap wrong">0,7 с</span><span>разрыв пропущен</span>
-        <span></span><span>клик по паузе — звук, разметка и все варианты</span>
-      </div>
     </main>
   </div>
 {/if}
@@ -237,32 +234,37 @@
   .primary:hover { opacity: .88 }
   .danger { color: #ff8a8a }
 
-  .grid { display: grid; grid-template-columns: 420px 1fr }
+  .grid { display: grid; grid-template-columns: 340px 1fr }
   aside { position: sticky; top: 52px; height: calc(100vh - 52px); overflow: auto; border-right: 1px solid var(--line) }
-  .pane { padding: 18px 24px; border-bottom: 1px solid var(--line) }
-  .pane h2 { margin-bottom: 10px }
+  .pane { padding: 14px 16px; border-bottom: 1px solid var(--line) }
+  .pane:last-child { border-bottom: 0 }
+  .pane-h { display: flex; justify-content: space-between; align-items: center; margin: 0 0 8px 8px }
+  .mini { border: 0; padding: 2px 8px; font-size: 12px; color: var(--dim) }
   .note { font-size: 12px; line-height: 1.45; color: var(--dim); margin: 0 0 10px }
   .item { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; text-align: left; border-color: transparent; padding: 7px 10px; margin-bottom: 2px }
   .item.on { background: var(--hover) }
-  .item.add { color: var(--dim); margin-bottom: 12px }
-  .cnt, .badge { font-size: 12px; font-weight: 500; padding: 1px 8px; border-radius: 6px; background: var(--chip); color: var(--dim); white-space: nowrap }
-  .cnt.good, .badge.good { background: rgba(26, 155, 99, .22); color: #5fd39a }
-  .badge { background: rgba(229, 72, 77, .2); color: #ff8a8a }
-  .name, textarea { display: block; width: 100%; padding: 9px 11px; margin-bottom: 10px }
+  .cnt { font-size: 12px; font-weight: 500; padding: 1px 7px; border-radius: 6px; background: var(--chip); color: var(--dim); font-variant-numeric: tabular-nums }
+  .cnt.good { background: rgba(26, 155, 99, .22); color: #5fd39a }
+  .name, textarea { display: block; width: 100%; padding: 8px 10px; margin-bottom: 8px }
   textarea { resize: vertical; line-height: 1.5 }
-  .kv { display: flex; justify-content: space-between; align-items: center; color: var(--dim); min-height: 36px }
+  .kv { display: flex; justify-content: space-between; align-items: center; color: var(--dim); padding-left: 8px }
   .seg { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--line2); border-radius: 8px }
   .seg button { border: 0; border-radius: 6px; padding: 3px 12px; color: var(--dim) }
   .seg button.on { background: var(--hover); color: var(--text) }
-  summary { cursor: pointer; font-weight: 600 }
+  summary { cursor: pointer; font-weight: 600; padding-left: 8px }
+  .drawer summary { font-weight: 400; padding: 0 }
 
-  main { padding: 20px 24px; max-width: 920px }
+  main { padding: 14px 20px 0; min-height: calc(100vh - 52px); box-sizing: border-box; display: flex; flex-direction: column }
   .tip { border: 1px solid var(--line2); border-radius: 10px; padding: 10px 12px; margin-bottom: 14px; color: var(--dim) }
-  section { border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px 16px; margin-bottom: 14px }
-  .sec-h { display: flex; align-items: center; gap: 10px; margin-bottom: 10px }
+  section { border: 1px solid var(--line); border-radius: 12px; padding: 10px 16px 12px; margin-bottom: 10px }
+  .sec-h { display: flex; align-items: center; gap: 10px; margin-bottom: 4px }
+  .mark { color: var(--red); font-weight: 700 }
+  .mark.good { color: #5fd39a }
+  .drawer { position: sticky; bottom: 0; margin: auto -20px 0; padding: 12px 20px 14px; background: var(--deep); border-top: 1px solid var(--line2); max-height: 50vh; overflow: auto }
+  .drawer .sec-h { margin-bottom: 8px }
   .sec-h .dim { font-size: 13px }
   .check { display: flex; align-items: center; gap: 6px; color: var(--dim) }
-  .msg { margin: 0; font-size: 15px; line-height: 2 }
+  .msg { margin: 0; font-size: 14.5px; line-height: 1.85 }
   .gap { font-size: 11px; line-height: 18px; font-weight: 500; padding: 0 7px; margin: 0 4px; border: 0; border-radius: 6px; background: var(--chip); color: var(--dim); font-variant-numeric: tabular-nums; vertical-align: 1px }
   button.gap:hover { background: var(--chip); filter: brightness(1.25) }
   .gap.glued { background: var(--blue); color: #fff }
@@ -270,11 +272,11 @@
   .gap.good { background: var(--green) }
   .gap.wrong { background: var(--red); color: #fff }
   .gap.sel, button.gap.sel:hover { background: #fff; color: #0d0d0d; filter: none }
-  .legend { display: grid; grid-template-columns: max-content 1fr; gap: 6px 10px; align-items: center; justify-items: start; color: var(--dim); font-size: 13px; padding: 4px 2px }
-  .legend .gap { margin: 0 }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 18px; color: var(--dim); font-size: 12px; margin: 0 2px 12px }
+  .legend .gap { margin: 0 4px 0 0; font-style: normal; display: inline-block }
 
-  table { border-collapse: collapse; width: 100%; margin: 0 0 12px }
-  td { padding: 6px 10px }
+  table { border-collapse: collapse; width: 100%; margin: 0 0 8px }
+  td { padding: 4px 10px }
   tr { cursor: pointer }
   tr td:first-child { border-radius: 8px 0 0 8px }
   tr td:last-child { border-radius: 0 8px 8px 0; white-space: nowrap }
