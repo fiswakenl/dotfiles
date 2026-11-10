@@ -1,0 +1,55 @@
+#!/bin/sh
+# Службы из .chezmoidata/services.yaml → ~/Library/LaunchAgents/<имя>.plist. launchd не любит ссылки — plist копии.
+# Загружает новые и изменённые, выгружает и удаляет убранные из списка (их имена помнит ~/.local/state/dotfiles/services).
+# список: {{ .services | toJson | sha256sum }}
+agents="$HOME/Library/LaunchAgents"; state="$HOME/.local/state/dotfiles/services"; uid=$(id -u)
+mkdir -p "$agents" "$state" "$HOME/Library/Logs"
+
+put() {  # $1 — имя, plist — со входа
+    f="$agents/$1.plist"; tmp=$(mktemp); cat > "$tmp"; touch "$state/$1"
+    if cmp -s "$tmp" "$f" && launchctl print "gui/$uid/$1" >/dev/null 2>&1; then rm "$tmp"; return; fi
+    launchctl bootout "gui/$uid/$1" 2>/dev/null || true
+    mv "$tmp" "$f" && launchctl bootstrap "gui/$uid" "$f" && echo "  $1 загружен"
+}
+{{ range $name, $s := .services }}
+put {{ $name }} <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{{ $name }}</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/sh</string><string>-c</string><string>{{ $s.run | replace "&" "&amp;" | replace "<" "&lt;" | replace ">" "&gt;" }}</string></array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>{{ $.chezmoi.homeDir }}/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+{{- range $k, $v := (get $s "env" | default dict) }}
+    <key>{{ $k }}</key><string>{{ $v }}</string>
+{{- end }}
+  </dict>
+{{- if (get $s "dir") }}
+  <key>WorkingDirectory</key><string>{{ get $s "dir" | replace "~" $.chezmoi.homeDir }}</string>
+{{- end }}
+{{- if (get $s "port") }}
+  <key>Sockets</key>
+  <dict><key>Listener</key><dict><key>SockNodeName</key><string>127.0.0.1</string><key>SockServiceName</key><string>{{ get $s "port" }}</string></dict></dict>
+{{- else }}
+  <key>RunAtLoad</key><true/>
+{{- end }}
+{{- if (get $s "always") }}
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>15</integer>
+{{- end }}
+  <key>StandardOutPath</key><string>{{ $.chezmoi.homeDir }}/Library/Logs/{{ $name }}.log</string>
+  <key>StandardErrorPath</key><string>{{ $.chezmoi.homeDir }}/Library/Logs/{{ $name }}.log</string>
+</dict>
+</plist>
+PLIST
+{{ end }}
+for f in "$state"/*; do
+    [ -e "$f" ] || continue
+    n=$(basename "$f")
+    case " {{ keys .services | sortAlpha | join " " }} " in *" $n "*) continue ;; esac
+    launchctl bootout "gui/$uid/$n" 2>/dev/null || true
+    rm -f "$agents/$n.plist" "$f" && echo "  $n убран"
+done

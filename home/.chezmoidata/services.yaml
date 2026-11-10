@@ -1,0 +1,19 @@
+# Службы мака. Из этого списка скрипт .chezmoiscripts/darwin/run_onchange_after_20-services.sh собирает
+# ~/Library/LaunchAgents/<имя>.plist и загружает в launchd; убранную отсюда службу — выгружает и удаляет.
+# Управлять — lunchy: lunchy ls | status ИМЯ | start ИМЯ | stop ИМЯ | restart ИМЯ.
+#
+#   run     команда (sh -c; PATH — ~/.local/bin и Homebrew; $HOME раскрывается); exec — чтобы порт достался самой службе
+#   port    launchd держит порт 127.0.0.1:port и запускает службу по первому обращению; без port — запуск при входе
+#   always  держать запущенной: упала — поднять снова
+#   env     переменные окружения
+#   dir     рабочая папка
+# Лог — ~/Library/Logs/<имя>.log.
+services:
+  callrec:
+    run: S=$HOME/Documents/store/dnk/tools/callrec/callrec_server.py; uv sync --quiet --script "$S"; exec "$(uv python find --script "$S")" "$S"
+    port: 2255
+  kuper:
+    run: exec /opt/homebrew/bin/python3 $HOME/Documents/store/dnk/tools/kuper/kuper_server.py
+    port: 2256
+  nora:  # туннели boring с group = "autostart" в ~/.boring.toml; дальше их держит сам boring
+    run: exec boring open -g autostart
