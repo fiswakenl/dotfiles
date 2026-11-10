@@ -152,7 +152,7 @@
         </section>
       {/each}
       <div class="legend mute">
-        цвет — сообщение ·
+        <span class="chunk m0">голубой</span> и <span class="chunk m1">песочный</span> — соседние сообщения, смена цвета — разрыв ·
         <span class="gap">0,7 с</span> пауза ·
         <span class="gap glued">⌒ 0,7 с</span> спросили, склеил ·
         <span class="gap cut">0,7 с</span> спросили, отдельно ·
