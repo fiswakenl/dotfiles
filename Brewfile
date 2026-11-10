@@ -27,6 +27,8 @@ brew "glab"
 brew "glow"
 # Open source programming language to build simple/reliable/efficient software
 brew "go"
+# GO Simple Tunnel - a simple tunnel written in golang
+brew "gost"
 # Graph visualization software from AT&T and Bell Labs
 brew "graphviz"
 # Client library for huggingface.co hub
