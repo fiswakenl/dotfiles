@@ -5,15 +5,15 @@
 help:
 	@echo 'make nespi   не спать, даже с закрытой крышкой (спросит пароль sudo)'
 	@echo 'make spi     спать как обычно'
-	@echo 'make son     что сейчас со сном'
+	@echo 'make son     что сейчас со сном: SleepDisabled 1 — не спит, 0 — спит'
 
 nespi:
-	@sudo pmset -a disablesleep 1
-	@$(MAKE) -s son
+	sudo pmset -a disablesleep 1
+	pmset -g | grep SleepDisabled
 
 spi:
-	@sudo pmset -a disablesleep 0
-	@$(MAKE) -s son
+	sudo pmset -a disablesleep 0
+	pmset -g | grep SleepDisabled
 
 son:
-	@pmset -g | awk '/SleepDisabled/ {print ($$2 == 1 ? "не спит, даже с закрытой крышкой" : "спит как обычно")}'
+	pmset -g | grep SleepDisabled
