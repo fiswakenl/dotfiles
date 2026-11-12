@@ -199,6 +199,7 @@
         {#each Object.entries(QS) as [q, m], n}
           <button class="item" class:on={q === qn} onclick={() => (qn = q)} title={m.hint}>
             <span><b class="num">{n + 1}</b>{m.name}</span><span class="when">{m.when}</span>
+            <span class="help flat">?<div class="pop"><b>{m.name}</b><pre>{WHY[q](cfg)}</pre></div></span>
           </button>
         {/each}
       </div>
@@ -217,13 +218,12 @@
       </div>
 
       <div class="pane">
-        {#snippet why()}<span class="help flat" tabindex="0">?<div class="pop"><b>{Q.name}</b><pre>{WHY[qn](cfg)}</pre></div></span>{/snippet}
         {#if vs[qn]}
-          <div class="pane-h"><span class="h"><h2>Промпт</h2>{@render why()}</span><button class="mini danger" onclick={drop}>удалить</button></div>
+          <div class="pane-h"><h2>Промпт</h2><button class="mini danger" onclick={drop}>удалить</button></div>
           <input class="name" bind:value={cur.name} oninput={() => (dirty = true)} placeholder="Название варианта" />
           <textarea bind:value={cur.text} oninput={() => (dirty = true)} onkeydown={keys} rows="7" placeholder="Текст промпта"></textarea>
         {:else}
-          <div class="pane-h"><span class="h"><h2 title="Этот промпт сейчас стоит в listen.py. Чтобы менять — «+ новый» сделает копию.">Промпт — как в gv</h2>{@render why()}</span><button class="mini" onclick={add}>править копию</button></div>
+          <div class="pane-h"><h2 title="Этот промпт сейчас стоит в listen.py. Чтобы менять — «+ новый» сделает копию.">Промпт — как в gv</h2><button class="mini" onclick={add}>править копию</button></div>
           <textarea value={cur.text} readonly rows="7"></textarea>
         {/if}
         {#if qn === 'turn'}
@@ -328,10 +328,10 @@
   .pane-h { display: flex; justify-content: space-between; align-items: center; margin: 0 0 8px 8px }
   .mini { border: 0; padding: 2px 8px; font-size: 12px; color: var(--dim) }
   .note { font-size: 12px; line-height: 1.45; color: var(--dim); margin: 0 0 10px }
-  .item { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; text-align: left; border-color: transparent; padding: 7px 10px; margin-bottom: 2px }
+  .item { position: relative; white-space: nowrap; display: flex; justify-content: space-between; align-items: center; gap: 6px; width: 100%; text-align: left; border-color: transparent; padding: 7px 8px 7px 10px; margin-bottom: 2px }
   .item.on { background: var(--hover) }
   .num { display: inline-block; width: 18px; color: var(--dim); font-weight: 500 }
-  .when { font-size: 12px; color: var(--dim); text-align: right }
+  .when { font-size: 12px; color: var(--dim); text-align: right; margin-left: auto }
   textarea[readonly] { color: var(--dim) }
   .cnt { font-size: 12px; font-weight: 500; padding: 1px 7px; border-radius: 6px; background: var(--chip); color: var(--dim); font-variant-numeric: tabular-nums }
   .cnt.good { background: rgba(26, 155, 99, .22); color: #5fd39a }
@@ -368,9 +368,8 @@
     color: var(--dim); font-size: 12px; font-weight: 400; line-height: 18px; text-align: left; white-space: nowrap; cursor: default; box-shadow: 0 8px 24px rgba(0, 0, 0, .4) }
   .help:hover .legend, .help:focus .legend { display: flex }
   .pane-h { position: relative }
-  .h { display: flex; align-items: center; gap: 8px }
   .help.flat { position: static; width: 18px; height: 18px; line-height: 18px; font-size: 11px }
-  .pop { display: none; position: absolute; bottom: 28px; left: 0; right: 0; z-index: 3; padding: 12px 14px; background: var(--deep); border: 1px solid var(--line2); border-radius: 10px;
+  .pop { display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 3; padding: 12px 14px; background: var(--deep); border: 1px solid var(--line2); border-radius: 10px;
     color: var(--dim); font-size: 12.5px; font-weight: 400; line-height: 1.5; text-align: left; cursor: default; box-shadow: 0 8px 24px rgba(0, 0, 0, .4) }
   .pop b { color: var(--text); font-weight: 600 }
   .pop pre { background: none; border: 0; padding: 0; margin: 6px 0 0; white-space: pre; font-size: 12px }
