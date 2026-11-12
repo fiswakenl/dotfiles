@@ -19,7 +19,8 @@ Agents как библиотеки, без сервера и сессии LiveKi
 Вместо Deepgram слушать может OpenAI (gpt-live-transcribe по сокету Realtime): команды /gv:openai и /gv:deepgram пишут выбор в ~/.claude/gv.ears (GV_EARS в окружении — важнее).
 Дальше всё то же — Turns и три вопроса; отличия прячет Segments: OpenAI ставит знаки и заглавные (убираем), конца речи не слышит
 (его ловит локальный Silero из плагина — VAD_SILENCE_S тишины) и текст куска отдаёт уже после «речь кончилась», а не до. Ходит через
-HTTPS_PROXY; список KEYWORDS подсказывает ему термины («Claude Code», а не «Cloud код»).
+HTTPS_PROXY; список KEYWORDS подсказывает ему термины («Claude Code», а не «Cloud код»). Тишину в него не шлём (Gate): он берёт за
+каждую секунду отправленного звука, даже за нули, — сокет при этом открыт и тёплый.
 
 Связь с Deepgram: подключение и обрыв ловит плагин (таймаут подключения, тишина в сокете); сдался — поток пересоздаётся через
 RETRY_S, звук за это время не копится, вечно. Ходит напрямую, без прокси: сон мака и туннель его не касаются.
@@ -41,6 +42,7 @@ import aiohttp
 import sounddevice as sd
 from livekit import rtc
 from livekit.agents import APIConnectOptions, APIError, inference
+from livekit.agents.vad import VADEventType
 from livekit.agents.llm import Choice, Probability
 from livekit.agents.stt import SpeechEventType
 from livekit.plugins import deepgram, openai
@@ -60,7 +62,10 @@ EARS_FILE = Path.home() / ".claude" / "gv.ears"
 EARS = os.environ.get("GV_EARS") or (EARS_FILE.read_text().strip() if EARS_FILE.exists() else "") or "deepgram"  # чем слушать: deepgram | openai
 KEYWORDS = ["Claude Code", "Claude", "Codex", "Deepgram", "devtools"]  # термины, которые OpenAI иначе слышит по-своему
 OPENAI_STT = dict(model="gpt-live-transcribe", language="ru", keywords=KEYWORDS)
+ANSWER_CHARS = 300  # столько от начала и от конца ответа Claude видит «продолжение?»: суть в первых строках, вопрос человеку — в последних
 VAD_SILENCE_S = 0.4  # столько тишины локальный детектор речи считает концом куска для OpenAI
+GATE_BEFORE_S = 0.6  # столько звука до начала речи досылаем в OpenAI: детектор замечает речь с опозданием, начало слова не теряется
+GATE_AFTER_S = 0.8  # столько тишины после речи ещё шлём: больше VAD_SILENCE_S, чтобы плагин успел закрыть кусок
 RETRY_S = 2  # поток Deepgram сдался — новый через столько
 CONNECT = APIConnectOptions(max_retry=0, timeout=10)  # повторы — наш цикл: новый поток не тащит звук, накопленный без связи
 TURN_WAIT = APIConnectOptions(max_retry=0, timeout=2)  # не ответил — реплику закроет пауза без текста
@@ -80,7 +85,8 @@ TURN = {"turn": Choice(
 QUESTION = {"continues": Probability(
     "Ты собираешь диктовку голосом в сообщения. Новую реплику надо дописать в то же сообщение, что и предыдущую "
     "(человек договаривает, уточняет или поправляет), а не отправить отдельным? "
-    "Длина паузы перед ней — такой же сигнал, как смысл: люди договаривают почти без паузы, а замолчав надолго, обычно начинают новое.")}
+    "Длина паузы перед ней — такой же сигнал, как смысл: люди договаривают почти без паузы, а замолчав надолго, обычно начинают новое. "
+    "Если на предыдущую Claude уже ответил и новая реплика отвечает ему или реагирует на его слова — это отдельное сообщение.")}
 EARLY = {"continues": Probability(
     "Человек диктует голосом, речь нарезана по паузам. Предыдущая реплика уже передана, а человек заговорил снова: слышно только "
     "начало новой фразы, она ещё не договорена. Это начало продолжения или поправки предыдущей реплики "
@@ -117,9 +123,10 @@ def words(sec: float) -> str:
 
 
 def said(text: str, last, pause: float | None, cut: bool) -> str:
-    """Что видит «продолжение?» по всей фразе: прошлый ask с его состоянием, пауза перед новой репликой (None — неизвестна, тега нет)
-    и сама реплика — тегами."""
-    d = {"до_паузы": last.text, "состояние": CUT if cut else STATE[last.state],
+    """Что видит «продолжение?» по всей фразе: прошлый ask с его состоянием и ответом Claude на него (если уже ответил), пауза перед
+    новой репликой (None — неизвестна, тега нет) и сама реплика — тегами. По ответу видно, договаривает человек своё или отвечает Claude."""
+    answer = last.answer if len(last.answer) <= 2 * ANSWER_CHARS else f"{last.answer[:ANSWER_CHARS]} … {last.answer[-ANSWER_CHARS:]}"
+    d = {"до_паузы": last.text, "состояние": CUT if cut else STATE[last.state], **({"ответ_claude": answer} if answer else {}),
          **({} if pause is None else {"пауза": words(round(pause, 1))}), "после_паузы": text}
     return "\n".join(f"<{k}>{v}</{k}>" for k, v in d.items())
 
@@ -140,6 +147,7 @@ class Listen:
         self.stream = None  # идущий поток распознавания (Deepgram или OpenAI)
         self.wav: wave.Wave_write | None = None
         self.audio_t0 = 0.0  # когда пошёл звук записи: от него время кусков в записи запуска
+        self.gate: Gate | None = None  # пропускает в поток только речь (OpenAI)
         self.order = asyncio.Lock()  # реплики решаются по одной, в порядке речи: следующая видит, куда ушла прошлая
         self.partial = self.asked = ""  # что уже слышно в идущей фразе; по какому её началу уже спросили классификатор
         self.settled = False  # ход Claude этой фразой уже остановлен
@@ -158,6 +166,8 @@ class Listen:
                                  vad=inference.VAD(model="silero", min_silence_duration=VAD_SILENCE_S), **OPENAI_STT)
                 stt._session = http  # плагин берёт сессию из задания LiveKit, которого у нас нет
                 same = Segments(self)
+                self.gate = Gate(self)
+                self.spawn(self.gate.run())
             else:
                 stt = Deepgram(api_key=os.environ.get("DEEPGRAM_API_KEY") or env(".config/deepgram.env")["DEEPGRAM_API_KEY"],
                                http_session=http, **DEEPGRAM)
@@ -186,6 +196,12 @@ class Listen:
             self.wav.setframerate(RATE)
             trace("audio.start", file=self.wav_path.name, rate=RATE)
         self.wav.writeframes(pcm)
+        if self.gate:
+            self.gate.push(pcm)
+        else:
+            self.send(pcm)
+
+    def send(self, pcm: bytes) -> None:
         if self.stream:
             try:
                 self.stream.push_frame(rtc.AudioFrame(pcm, RATE, 1, len(pcm) // 2))
@@ -340,6 +356,38 @@ class Turns:
             self.closed = time.monotonic()
             self.listen.heard(text, self.pause)
         self.pause = None
+
+
+class Gate:
+    """В поток распознавания — только речь. OpenAI берёт за каждую секунду отправленного звука, даже за нули (сверено со счётом:
+    180 с тишины — 180 с расхода), а за открытый сокет без звука — нет. Свой Silero слушает весь звук микрофона: речь началась —
+    в поток уходит запас GATE_BEFORE_S до неё и всё дальше; GATE_AFTER_S тишины — поток снова молчит."""
+
+    def __init__(self, listen: "Listen") -> None:
+        self.listen = listen
+        self.vad = inference.VAD(model="silero", min_silence_duration=GATE_AFTER_S).stream()
+        self.before: deque = deque(maxlen=int(GATE_BEFORE_S / BLOCK_S))
+        self.open = False
+        self.sent = 0  # блоков ушло в поток за этот отрезок речи
+
+    def push(self, pcm: bytes) -> None:
+        self.vad.push_frame(rtc.AudioFrame(pcm, RATE, 1, len(pcm) // 2))
+        if self.open:
+            self.sent += 1
+            self.listen.send(pcm)
+        else:
+            self.before.append(pcm)
+
+    async def run(self) -> None:
+        async for ev in self.vad:
+            if ev.type == VADEventType.START_OF_SPEECH and not self.open:
+                self.open, self.sent = True, len(self.before)
+                for pcm in self.before:
+                    self.listen.send(pcm)
+                self.before.clear()
+            elif ev.type == VADEventType.END_OF_SPEECH and self.open:
+                self.open = False
+                trace("gate.sent", s=round(self.sent * BLOCK_S, 1))
 
 
 class Segments:
