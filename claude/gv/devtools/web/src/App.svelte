@@ -7,11 +7,11 @@
   const TURN = { complete: 'закончена', short: 'не закончена', long: 'подождать' }
   // join — модель считает, что сообщение то же (⌒); split — что тут граница (┃)
   const QS = {
-    turn: { name: 'Мысль закончена?', when: 'замолчал', join: 'ждёт', split: 'закрыл фразу',
+    turn: { name: 'Мысль закончена?', when: 'замолчал', trigger: 'Deepgram услышал конец речи', join: 'ждёт', split: 'закрыл фразу',
       hint: 'Deepgram услышал конец речи. Модель решает: фраза закончена — закрыть её, или человек договорит — подождать.' },
-    route: { name: 'Продолжение?', when: 'фраза закрыта', join: 'склеил', split: 'новое сообщение',
+    route: { name: 'Продолжение?', when: 'фраза закрыта', trigger: 'фраза закрыта, решаем, куда её отправить', join: 'склеил', split: 'новое сообщение',
       hint: 'Фраза закрыта. Модель решает: дописать её к прошлому сообщению или отправить отдельным.' },
-    early: { name: 'Начало продолжения?', when: 'Claude занят', join: 'остановил Claude', split: 'не тронул',
+    early: { name: 'Начало продолжения?', when: 'Claude занят', trigger: 'ты заговорил снова, пока Claude занят прошлой фразой', join: 'остановил Claude', split: 'не тронул',
       hint: 'Claude работает над прошлой фразой, а человек заговорил снова. По первым словам модель решает: это продолжение — остановить Claude сразу, или новая мысль — не трогать.' },
   }
   // что модель отвечает и что gv делает с ответом — под «?» у промпта
@@ -199,7 +199,7 @@
         {#each Object.entries(QS) as [q, m], n}
           <button class="item" class:on={q === qn} onclick={() => (qn = q)} title={m.hint}>
             <span><b class="num">{n + 1}</b>{m.name}</span><span class="when">{m.when}</span>
-            <span class="help flat">?<div class="pop"><b>{m.name}</b><pre>{WHY[q](cfg)}</pre></div></span>
+            <span class="help flat">?<div class="pop"><b>{m.name}</b><p>Когда: {m.trigger}</p><pre>{WHY[q](cfg)}</pre></div></span>
           </button>
         {/each}
       </div>
@@ -372,6 +372,7 @@
   .pop { display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 3; padding: 12px 14px; background: var(--deep); border: 1px solid var(--line2); border-radius: 10px;
     color: var(--dim); font-size: 12.5px; font-weight: 400; line-height: 1.5; text-align: left; cursor: default; box-shadow: 0 8px 24px rgba(0, 0, 0, .4) }
   .pop b { color: var(--text); font-weight: 600 }
+  .pop p { margin: 4px 0 0; white-space: normal }
   .pop pre { background: none; border: 0; padding: 0; margin: 6px 0 0; white-space: pre; font-size: 12px }
   .help:hover .pop, .help:focus .pop { display: block }
   .legend .gap { margin: 0 8px 0 0; font-style: normal; display: inline-block; min-width: 52px; text-align: center; box-sizing: border-box }
