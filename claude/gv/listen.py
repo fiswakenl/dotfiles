@@ -14,6 +14,7 @@ Agents как библиотеки, без сервера и сессии LiveKi
 Тот же вопрос задаётся и рано — по первым словам новой фразы, пока Claude работает над последней репликой: «да» останавливает его
 ход сразу (core.interrupt); слов мало — вопрос повторяется на каждом новом куске текста. Решает всё равно вопрос по всей фразе.
 Оба видят паузу перед фразой, и в вопросе сказано, что она значит: без этого классификатор её не замечал (17 с тишины — «продолжение» 0,86).
+Вопрос по всей фразе получает вход тегами и паузу словами (said): так он на замере в devtools делит увереннее всего; ранний — строками (state).
 
 Связь с Deepgram: подключение и обрыв ловит плагин (таймаут подключения, тишина в сокете); сдался — поток пересоздаётся через
 RETRY_S, звук за это время не копится, вечно. Ходит напрямую, без прокси: сон мака и туннель его не касаются.
@@ -65,10 +66,9 @@ TURN = {"turn": Choice(
               "on a conjunction, a preposition, an article, or an unfinished list or number",
      "long": "the user needs time to think or asked the assistant to wait, or has only acknowledged the question without answering it"})}
 QUESTION = {"continues": Probability(
-    "Человек диктует голосом, речь нарезана по паузам. Новая реплика — продолжение или поправка предыдущей "
-    "(договаривает, уточняет, исправляет её), а не отдельная законченная мысль? "
-    "Учитывай паузу перед новой репликой: меньше секунды — человек договаривает фразу; несколько секунд и больше — он уже "
-    "закончил и начинает новую мысль, если новая реплика сама по себе законченная.")}
+    "Ты собираешь диктовку голосом в сообщения. Новую реплику надо дописать в то же сообщение, что и предыдущую "
+    "(человек договаривает, уточняет или поправляет), а не отправить отдельным? "
+    "Длина паузы перед ней — такой же сигнал, как смысл: люди договаривают почти без паузы, а замолчав надолго, обычно начинают новое.")}
 EARLY = {"continues": Probability(
     "Человек диктует голосом, речь нарезана по паузам. Предыдущая реплика уже передана, а человек заговорил снова: слышно только "
     "начало новой фразы, она ещё не договорена. Это начало продолжения или поправки предыдущей реплики "
@@ -92,11 +92,26 @@ def env(path: str) -> dict:
     return {k: v.strip() for k, v in (l.split("=", 1) for l in (Path.home() / path).read_text().splitlines() if "=" in l and not l.startswith("#"))}
 
 
-def state(text: str, last, pause: float | None, cut: bool = False, new: str = "Новая реплика") -> str:
-    """Что видит классификатор: прошлый ask с его состоянием, пауза перед новой репликой (None — неизвестна) и сама реплика."""
+def words(sec: float) -> str:
+    """Пауза словами: голое число классификатор читает хуже."""
+    return (f"{sec} с — короткая, человек почти не останавливался" if sec < 1 else
+            f"{sec} с — средняя, человек запнулся или подбирал слово" if sec < 3 else
+            f"{sec} с — долгая, человек замолчал и потом заговорил снова")
+
+
+def said(text: str, last, pause: float | None, cut: bool) -> str:
+    """Что видит «продолжение?» по всей фразе: прошлый ask с его состоянием, пауза перед новой репликой (None — неизвестна, тега нет)
+    и сама реплика — тегами."""
+    d = {"до_паузы": last.text, "состояние": CUT if cut else STATE[last.state],
+         **({} if pause is None else {"пауза": words(round(pause, 1))}), "после_паузы": text}
+    return "\n".join(f"<{k}>{v}</{k}>" for k, v in d.items())
+
+
+def state(text: str, last, pause: float | None) -> str:
+    """Что видит ранняя проверка: прошлый ask с его состоянием, пауза перед новой репликой (None — неизвестна) и начало реплики."""
     gap = "" if pause is None else f"Пауза в речи перед новой репликой: {pause:.1f} с\n"
-    return (f"Предыдущая реплика ({CUT if cut else STATE[last.state]}, передана {time.monotonic() - last.at:.1f} с назад): {last.text}\n"
-            f"{gap}{new}: {text}")
+    return (f"Предыдущая реплика ({STATE[last.state]}, передана {time.monotonic() - last.at:.1f} с назад): {last.text}\n"
+            f"{gap}Начало новой реплики: {text}")
 
 
 class Listen:
@@ -184,7 +199,7 @@ class Listen:
             self.asked = text
             if not (last := self.core.working_on()):
                 return
-            if await self.ask_continues(EARLY, state(text, last, pause, new="Начало новой реплики"), "route.early", last=last.id, text=text):
+            if await self.ask_continues(EARLY, state(text, last, pause), "route.early", last=last.id, text=text):
                 self.settled = self.core.interrupt(last.id)
 
     # ── фраза закончена: куда её ────────────────────────────────────────────────
@@ -200,7 +215,7 @@ class Listen:
     async def deliver(self, text: str, pause: float | None) -> None:
         async with self.order:
             last, cut = self.core.last_ask(), self.core.cut
-            continues = bool(last) and await self.ask_continues(QUESTION, state(text, last, pause, cut == last.id), "route",
+            continues = bool(last) and await self.ask_continues(QUESTION, said(text, last, pause, cut == last.id), "route",
                                                                  last=last.id, pause=pause and round(pause, 1), cut=cut == last.id)
             # Остановленный запрос ядро отправит заново: Claude снова занят им, как был до остановки. Остановка — на момент ответа
             # классификатора: пока он думал, ранний вопрос по следующей фразе мог её устроить.

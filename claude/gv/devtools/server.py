@@ -48,21 +48,14 @@ PROMPTS = HERE / "prompts.json"
 DIST = HERE / "web" / "dist"
 ASK = APIConnectOptions(max_retry=2, timeout=15)
 QUESTIONS = {"turn": listen.TURN["turn"].prompt, "route": listen.QUESTION["continues"].prompt, "early": listen.EARLY["continues"].prompt}
-STATE = "Claude работает над ней"  # в devtools прошлая реплика всегда в работе
-
-
-def words(sec: float) -> str:
-    """Пауза словами: голое число модель читает хуже."""
-    return (f"{sec} с — короткая, человек почти не останавливался" if sec < 1 else
-            f"{sec} с — средняя, человек запнулся или подбирал слово" if sec < 3 else
-            f"{sec} с — долгая, человек замолчал и потом заговорил снова")
+STATE = listen.STATE["sent"]  # в devtools прошлая реплика всегда в работе
 
 
 def fields(prev: str, new: str, pause: float, early: bool, verbal: bool) -> dict:
     """Что видит «продолжение?»: prev — то, что уже ушло (с прошлыми склейками), new — новая реплика или её начало (early);
     verbal — пауза словами, а не числом. Содержание одно на все форматы — PACK отличаются только упаковкой."""
     sec = round(pause, 1)
-    return {"до_паузы": prev, "состояние": STATE, **({"пауза": words(sec)} if verbal else {"пауза_сек": sec}),
+    return {"до_паузы": prev, "состояние": STATE, **({"пауза": listen.words(sec)} if verbal else {"пауза_сек": sec}),
             "начало_после_паузы" if early else "после_паузы": new}
 
 

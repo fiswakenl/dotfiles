@@ -31,7 +31,7 @@
 
   let cfg = $state(null)
   let rec = $state('20261110-103304'), from = $state('10:36:20'), to = $state('10:37:20')
-  // в каком виде второму и третьему вопросу подаются реплики: упаковка и пауза словами или числом; по умолчанию — лучшие на замере
+  // в каком виде второму и третьему вопросу подаются реплики: упаковка и пауза словами или числом; по умолчанию — как в listen.py
   let fmt = $state({ route: { pack: 'xml', words: true }, early: { pack: 'строками', words: false } })
   let qn = $state('route') // выбранный вопрос
   let vs = $state({ turn: 0, route: 0, early: 0 }) // выбранный вариант промпта у каждого вопроса
@@ -152,7 +152,6 @@
   const keys = (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run() } }
 
   $effect(() => { api('config').then((c) => {
-    vs.route = Math.max(0, c.prompts.route.findIndex((p) => p.name === 'в одно сообщение')) // лучший на замере
     cfg = c
     load()
   }) })
