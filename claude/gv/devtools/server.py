@@ -48,13 +48,24 @@ PROMPTS = HERE / "prompts.json"
 DIST = HERE / "web" / "dist"
 ASK = APIConnectOptions(max_retry=2, timeout=15)
 QUESTIONS = {"turn": listen.TURN["turn"].prompt, "route": listen.QUESTION["continues"].prompt, "early": listen.EARLY["continues"].prompt}
-INPUTS = {  # формат входа «продолжение?»: prev — то, что уже ушло (с прошлыми склейками), new — новая реплика или её начало (early)
-    "строками": lambda prev, new, pause, early=False: (f"Предыдущая реплика (Claude работает над ней): {prev}\n"
-                                                       f"Пауза в речи перед новой репликой: {pause:.1f} с\n"
-                                                       f"{'Начало новой реплики' if early else 'Новая реплика'}: {new}"),
-    "json": lambda prev, new, pause, early=False: json.dumps({"до_паузы": prev, "пауза_мс": round(pause * 1000),
-                                                              "начало_после_паузы" if early else "после_паузы": new}, ensure_ascii=False),
-}
+STATE = "Claude работает над ней"  # в devtools прошлая реплика всегда в работе
+
+
+def fields(prev: str, new: str, pause: float, early: bool) -> dict:
+    """Что видит «продолжение?»: prev — то, что уже ушло (с прошлыми склейками), new — новая реплика или её начало (early).
+    Содержание одно на все форматы — INPUTS отличаются только упаковкой."""
+    return {"до_паузы": prev, "состояние": STATE, "пауза_сек": round(pause, 1), "начало_после_паузы" if early else "после_паузы": new}
+
+
+def lines(d: dict) -> str:
+    new = "Начало новой реплики" if "начало_после_паузы" in d else "Новая реплика"
+    return (f"Предыдущая реплика ({d['состояние']}): {d['до_паузы']}\nПауза в речи перед новой репликой: {d['пауза_сек']} с\n"
+            f"{new}: {d.get('после_паузы', d.get('начало_после_паузы'))}")
+
+
+PACK = {"строками": lines, "json": lambda d: json.dumps(d, ensure_ascii=False),
+        "xml": lambda d: "\n".join(f"<{k}>{v}</{k}>" for k, v in d.items())}
+INPUTS = {name: (lambda prev, new, pause, early=False, pack=pack: pack(fields(prev, new, pause, early))) for name, pack in PACK.items()}
 listen.trace = lambda *a, **k: None  # поток Deepgram — без записи в журнал живого GV
 decisions = listen.openai.DecisionModel(model=listen.DECISIONS_MODEL, api_key=listen.env(".config/openai.env")["OPENAI_API_KEY"])
 cache: dict = {}

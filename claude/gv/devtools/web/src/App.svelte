@@ -166,6 +166,10 @@
     <button onclick={load}>Загрузить</button>
     <span class="status">{busy || (dirty ? 'Несохранённые правки' : '')}</span>
     <span class="grow"></span>
+    {#if qn !== 'turn'}
+      <span class="dim small" title="В каком виде модели подаются прошлая реплика, пауза и новая: содержание одно, отличается упаковка">Вход</span>
+      <div class="seg">{#each cfg.inputs as i}<button class:on={input === i} onclick={() => setInput(i)}>{i}</button>{/each}</div>
+    {/if}
     <span class="help" tabindex="0">?<div class="legend">
         <span><i class="gap">0,7 с</i> не спрашивали</span>
         <span><i class="gap glued">⌒ 0,7 с</i> {Q.join}</span>
@@ -214,10 +218,6 @@
         {/if}
         {#if qn === 'turn'}
           <details><summary class="dim small">Варианты ответа</summary><pre>{Object.entries(cfg.turn_options).map(([k, v]) => `${TURN[k]} — ${v}`).join('\n\n')}</pre></details>
-        {:else}
-          <div class="kv"><span>Реплики подаются</span>
-            <div class="seg">{#each cfg.inputs as i}<button class:on={input === i} onclick={() => setInput(i)}>{i}</button>{/each}</div>
-          </div>
         {/if}
       </div>
     </aside>
@@ -326,7 +326,6 @@
   .cnt.good { background: rgba(26, 155, 99, .22); color: #5fd39a }
   .name, textarea { display: block; width: 100%; padding: 8px 10px; margin-bottom: 8px }
   textarea { resize: vertical; line-height: 1.5 }
-  .kv { display: flex; justify-content: space-between; align-items: center; color: var(--dim); padding-left: 8px }
   .seg { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--line2); border-radius: 8px }
   .seg button { border: 0; border-radius: 6px; padding: 3px 12px; color: var(--dim) }
   .seg button.on { background: var(--hover); color: var(--text) }
