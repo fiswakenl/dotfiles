@@ -27,7 +27,6 @@ import datetime
 import hashlib
 import io
 import json
-import re
 import sys
 import wave
 from pathlib import Path
@@ -78,10 +77,6 @@ def pack(fmt: dict, prev: str, new: str, pause: float, early: bool = False) -> s
 listen.trace = lambda *a, **k: None  # поток Deepgram — без записи в журнал живого GV
 decisions = listen.openai.DecisionModel(model=listen.DECISIONS_MODEL, api_key=listen.env(".config/openai.env")["OPENAI_API_KEY"])
 cache: dict = {}
-
-
-def plain(text: str) -> str:
-    return re.sub(r"[^\w\s-]", "", text).lower()
 
 
 def at(rec: str, hms: str) -> float:
@@ -167,7 +162,7 @@ def source(rec: str, a: str, b: str, kind: str) -> list[dict] | None:
         p = replay_path(rec, a, b)
         return json.loads(p.read_text()) if p.exists() else None
     chunks = live_chunks(rec, a, b)
-    return [dict(c, text=plain(c["text"]), interims=[plain(t) for t in c["interims"]]) for c in chunks] if kind == "plain" else chunks
+    return [dict(c, text=listen.plain(c["text"]), interims=[listen.plain(t) for t in c["interims"]]) for c in chunks] if kind == "plain" else chunks
 
 
 async def once(key: str, coro):

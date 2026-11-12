@@ -16,6 +16,11 @@ Agents как библиотеки, без сервера и сессии LiveKi
 Оба видят паузу перед фразой, и в вопросе сказано, что она значит: без этого классификатор её не замечал (17 с тишины — «продолжение» 0,86).
 Вопрос по всей фразе получает вход тегами и паузу словами (said): так он на замере в devtools делит увереннее всего; ранний — строками (state).
 
+Вместо Deepgram слушать может OpenAI (gpt-live-transcribe по сокету Realtime): команды /gv:openai и /gv:deepgram пишут выбор в ~/.claude/gv.ears (GV_EARS в окружении — важнее).
+Дальше всё то же — Turns и три вопроса; отличия прячет Segments: OpenAI ставит знаки и заглавные (убираем), конца речи не слышит
+(его ловит локальный Silero из плагина — VAD_SILENCE_S тишины) и текст куска отдаёт уже после «речь кончилась», а не до. Ходит через
+HTTPS_PROXY; список KEYWORDS подсказывает ему термины («Claude Code», а не «Cloud код»).
+
 Связь с Deepgram: подключение и обрыв ловит плагин (таймаут подключения, тишина в сокете); сдался — поток пересоздаётся через
 RETRY_S, звук за это время не копится, вечно. Ходит напрямую, без прокси: сон мака и туннель его не касаются.
 
@@ -26,14 +31,16 @@ RETRY_S, звук за это время не копится, вечно. Ход
 import asyncio
 import logging
 import os
+import re
 import time
 import wave
+from collections import deque
 from pathlib import Path
 
 import aiohttp
 import sounddevice as sd
 from livekit import rtc
-from livekit.agents import APIConnectOptions, APIError
+from livekit.agents import APIConnectOptions, APIError, inference
 from livekit.agents.llm import Choice, Probability
 from livekit.agents.stt import SpeechEventType
 from livekit.plugins import deepgram, openai
@@ -49,6 +56,11 @@ DOUBT, CERTAIN = 0.5, 0.9  # уверенность в «договорит»: �
 UTTERANCE_END_MS = 1000  # UtteranceEnd Deepgram: столько без новых слов; меньше 1000 он не принимает
 DEEPGRAM = dict(model="nova-3", language="ru", punctuate=False, smart_format=False, filler_words=False, vad_events=True,
                 utterance_end_ms=UTTERANCE_END_MS)  # настройки потока; без знаков — см. шапку
+EARS_FILE = Path.home() / ".claude" / "gv.ears"
+EARS = os.environ.get("GV_EARS") or (EARS_FILE.read_text().strip() if EARS_FILE.exists() else "") or "deepgram"  # чем слушать: deepgram | openai
+KEYWORDS = ["Claude Code", "Claude", "Codex", "Deepgram", "devtools"]  # термины, которые OpenAI иначе слышит по-своему
+OPENAI_STT = dict(model="gpt-live-transcribe", language="ru", keywords=KEYWORDS)
+VAD_SILENCE_S = 0.4  # столько тишины локальный детектор речи считает концом куска для OpenAI
 RETRY_S = 2  # поток Deepgram сдался — новый через столько
 CONNECT = APIConnectOptions(max_retry=0, timeout=10)  # повторы — наш цикл: новый поток не тащит звук, накопленный без связи
 TURN_WAIT = APIConnectOptions(max_retry=0, timeout=2)  # не ответил — реплику закроет пауза без текста
@@ -77,6 +89,11 @@ EARLY = {"continues": Probability(
     "закончил и начинает новую мысль, если начало само по себе звучит как новая мысль.")}
 
 logging.basicConfig(level=logging.WARNING)  # в ~/.claude/gv.out — только сбои библиотек
+
+
+def plain(text: str) -> str:
+    """Текст как от Deepgram без знаков: строчными, без пунктуации."""
+    return re.sub(r"[^\w\s-]", "", text).lower()
 
 
 def patience(verdict: str, p: float) -> float:
@@ -120,8 +137,9 @@ class Listen:
         self.mic = Mic(self)
         self.turns = Turns(self)
         self.decisions = openai.DecisionModel(model=DECISIONS_MODEL, api_key=os.environ.get("OPENAI_API_KEY") or env(".config/openai.env")["OPENAI_API_KEY"])
-        self.stream: deepgram.stt.SpeechStream | None = None
+        self.stream = None  # идущий поток распознавания (Deepgram или OpenAI)
         self.wav: wave.Wave_write | None = None
+        self.audio_t0 = 0.0  # когда пошёл звук записи: от него время кусков в записи запуска
         self.order = asyncio.Lock()  # реплики решаются по одной, в порядке речи: следующая видит, куда ушла прошлая
         self.partial = self.asked = ""  # что уже слышно в идущей фразе; по какому её началу уже спросили классификатор
         self.settled = False  # ход Claude этой фразой уже остановлен
@@ -132,16 +150,25 @@ class Listen:
         self.decisions.on("metrics_collected", lambda m: log("decide.metrics", s=round(m.duration, 2), tokens=m.input_tokens))
         self.spawn(self.keep_warm())
         self.wav_path = trace_open().with_suffix(".wav")
-        async with aiohttp.ClientSession() as http:  # без trust_env: Deepgram — напрямую, мимо HTTPS_PROXY
-            stt = Deepgram(api_key=os.environ.get("DEEPGRAM_API_KEY") or env(".config/deepgram.env")["DEEPGRAM_API_KEY"],
-                           http_session=http, **DEEPGRAM)
+        openai_ears = EARS == "openai"
+        # без trust_env: Deepgram — напрямую, мимо HTTPS_PROXY; OpenAI — через него
+        async with aiohttp.ClientSession(proxy=os.environ.get("HTTPS_PROXY") if openai_ears else None) as http:
+            if openai_ears:
+                stt = openai.STT(api_key=os.environ.get("OPENAI_API_KEY") or env(".config/openai.env")["OPENAI_API_KEY"],
+                                 vad=inference.VAD(model="silero", min_silence_duration=VAD_SILENCE_S), **OPENAI_STT)
+                stt._session = http  # плагин берёт сессию из задания LiveKit, которого у нас нет
+                same = Segments(self)
+            else:
+                stt = Deepgram(api_key=os.environ.get("DEEPGRAM_API_KEY") or env(".config/deepgram.env")["DEEPGRAM_API_KEY"],
+                               http_session=http, **DEEPGRAM)
+                same = lambda ev: ev  # noqa: E731
             self.mic.start()
-            log("mic.start")
+            log("mic.start", ears=EARS)
             while True:
                 self.stream = stream = stt.stream(conn_options=CONNECT)
                 try:
                     async for ev in stream:
-                        self.turns.on(ev)
+                        self.turns.on(same(ev))
                 except Exception as ex:  # noqa: BLE001 — поток сдался (обычно APIError): ошибка на страницу, новый поток
                     self.error(f"{type(ex).__name__}: {ex}")
                 finally:
@@ -150,8 +177,9 @@ class Listen:
                 await asyncio.sleep(RETRY_S)
 
     def audio(self, pcm: bytes) -> None:
-        """Блок звука: в WAV записи и в поток Deepgram; связи нет — звук в Deepgram пропадает, в WAV — нет."""
+        """Блок звука: в WAV записи и в поток распознавания; связи нет — звук в поток пропадает, в WAV — нет."""
         if self.wav is None:
+            self.audio_t0 = time.time()
             self.wav = wave.open(str(self.wav_path), "wb")
             self.wav.setnchannels(1)
             self.wav.setsampwidth(2)
@@ -238,8 +266,9 @@ class Listen:
 
 
 class Turns:
-    """Реплики из потока Deepgram. Черновики и окончательные куски — в раннюю проверку; «речь кончилась» — вопрос классификатору
-    «мысль закончена?»: да — реплика закрыта. Пауза перед репликой — от конца прошлой до первого куска этой."""
+    """Реплики из потока распознавания. Черновики и окончательные куски — в раннюю проверку; «речь кончилась» — вопрос классификатору
+    «мысль закончена?»: да — реплика закрыта. Пауза перед репликой — от конца прошлой до первого куска этой.
+    У Deepgram кусок приходит до «речь кончилась», у OpenAI — после: тогда вопрос задаётся по куску, если человек всё ещё молчит."""
 
     def __init__(self, listen: Listen) -> None:
         self.listen = listen
@@ -247,12 +276,15 @@ class Turns:
         self.closed: float | None = None  # когда закрыта прошлая реплика
         self.pause: float | None = None
         self.last = 0.0  # когда пришёл последний кусок текста: тишина считается от него
+        self.speaking = False  # распознавание слышит речь
         self.asking: asyncio.Task | None = None
         self.waiting: asyncio.TimerHandle | None = None
 
     def on(self, ev) -> None:
         text = ev.alternatives[0].text.strip() if ev.alternatives else ""
-        if ev.type == SpeechEventType.INTERIM_TRANSCRIPT and text:
+        if ev.type == SpeechEventType.START_OF_SPEECH:
+            self.speaking = True
+        elif ev.type == SpeechEventType.INTERIM_TRANSCRIPT and text:
             self.more()
             self.listen.hearing(" ".join([*self.parts, text]), self.pause)
         elif ev.type == SpeechEventType.FINAL_TRANSCRIPT and text:
@@ -261,8 +293,13 @@ class Turns:
             self.last = time.monotonic()
             self.wait(PAUSE_MS / 1000)
             self.listen.hearing(" ".join(self.parts), self.pause)
-        elif ev.type == SpeechEventType.END_OF_SPEECH and self.parts:
-            self.asking = asyncio.create_task(self.ask(" ".join(self.parts)))
+            if not self.speaking:
+                self.asking = asyncio.create_task(self.ask(" ".join(self.parts)))
+        elif ev.type == SpeechEventType.END_OF_SPEECH:
+            self.speaking = False
+            self.last = time.monotonic()  # речь кончилась только что: у OpenAI текст последнего куска ещё в пути, а тишина уже идёт
+            if self.parts:
+                self.asking = asyncio.create_task(self.ask(" ".join(self.parts)))
 
     def more(self) -> None:
         """Пришёл текст: начало реплики — запомнить паузу перед ней; продолжение — прежние ожидания конца отменить."""
@@ -303,6 +340,42 @@ class Turns:
             self.closed = time.monotonic()
             self.listen.heard(text, self.pause)
         self.pause = None
+
+
+class Segments:
+    """События OpenAI — в том же виде, что у Deepgram: текст без знаков и заглавных, в запись запуска — те же stt.interim и stt.final.
+    Времени слов у OpenAI нет: кусок размечен одним «словом» от начала до конца речи по локальному детектору (точность около 0,3 с);
+    конец речи приходит раньше текста куска, поэтому концы ждут свои куски в очереди. На каждый конец OpenAI отвечает либо текстом и
+    счётом расхода, либо одним счётом (шум, слов нет) — тогда конец из очереди уходит без куска."""
+
+    def __init__(self, listen: "Listen") -> None:
+        self.listen = listen
+        self.start = 0.0
+        self.ended: deque = deque()
+        self.texted = False  # у текущего ответа OpenAI был текст
+
+    def __call__(self, ev):
+        at = round(time.time() - self.listen.audio_t0, 2)
+        if ev.type == SpeechEventType.START_OF_SPEECH:
+            self.start = at
+        elif ev.type == SpeechEventType.END_OF_SPEECH:
+            self.ended.append((self.start, round(at - VAD_SILENCE_S, 2)))
+        elif ev.type == SpeechEventType.RECOGNITION_USAGE:
+            if not self.texted and self.ended:
+                self.ended.popleft()
+            self.texted = False
+        elif ev.type in (SpeechEventType.INTERIM_TRANSCRIPT, SpeechEventType.FINAL_TRANSCRIPT) and ev.alternatives:
+            alt = ev.alternatives[0]
+            alt.text = plain(alt.text)
+            if not alt.text.strip():
+                pass
+            elif ev.type == SpeechEventType.INTERIM_TRANSCRIPT:
+                trace("stt.interim", text=alt.text, is_final=False, speech_final=False, dg_start=self.start)
+            else:
+                start, end = self.ended.popleft() if self.ended else (self.start, at)
+                self.texted = True
+                trace("stt.final", text=alt.text, is_final=True, speech_final=True, dg_start=start, words=[[alt.text, start, end, None]])
+        return ev
 
 
 class Deepgram(deepgram.STT):

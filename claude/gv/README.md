@@ -23,6 +23,8 @@ ccg            # Claude с GV и мостом отката (функция в ~/
 /gv            # включить или выключить голос; состояние — ~/.claude/gv.state
 ```
 
+Чем распознавать речь — `/gv:deepgram` (по умолчанию) или `/gv:openai` (gpt-live-transcribe по сокету Realtime, через `HTTPS_PROXY`): команда пишет выбор в `~/.claude/gv.ears` и гасит сервис, плагин поднимает его заново. Дальше всё одинаково: те же три вопроса классификатору.
+
 `ccg` = `--plugin-dir ~/.claude/gv` + `BUN_OPTIONS=--preload=…/preload.mjs`. Preload нужен мосту: штатный API плагина не даёт откатить историю.
 
 Ключи: Deepgram — `~/.config/deepgram.env`, OpenAI — `~/.config/openai.env` (через `HTTPS_PROXY`).
