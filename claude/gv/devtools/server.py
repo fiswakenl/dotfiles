@@ -235,7 +235,7 @@ def prompts() -> dict:
 async def config(_req):
     recs = sorted(p.stem for p in TRACES.glob("*.jsonl"))
     return web.json_response({"recs": recs, "prompts": prompts(), "inputs": list(INPUTS), "sure": listen.SURE,
-                              "pause_ms": listen.PAUSE_MS, "turn_options": listen.TURN["turn"].options})
+                              "pause_ms": listen.PAUSE_MS, "quick_ms": listen.QUICK_MS, "long_ms": listen.LONG_MS, "turn_options": listen.TURN["turn"].options})
 
 
 async def get_source(req):

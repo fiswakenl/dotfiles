@@ -14,6 +14,24 @@
     early: { name: 'Начало продолжения?', when: 'Claude занят', join: 'остановил Claude', split: 'не тронул',
       hint: 'Claude работает над прошлой фразой, а человек заговорил снова. По первым словам модель решает: это продолжение — остановить Claude сразу, или новая мысль — не трогать.' },
   }
+  // зачем вопрос устроен так и что уходит модели — под «?» у промпта
+  const WHY = {
+    turn: (c) => [
+      'Ответ — выбор из трёх названных вариантов. Одним «да/нет» не отличить «запнулся, сейчас договорит» от «думает, просил подождать», а ждать после них надо по-разному.',
+      `Закончена — фраза уходит сразу. Не закончена — ждём тишины от ${sec(c.quick_ms / 1000)} до ${sec(c.pause_ms / 1000)}: чем модель увереннее, тем дольше. Подождать — ${sec(c.long_ms / 1000)}.`,
+      'Модели уходит: этот промпт, описания трёх ответов и вся фраза целиком.',
+    ],
+    route: (c) => [
+      `Ответ — вероятность «это продолжение» от 0 до 1. От ${f(c.sure)} — склеить с прошлым сообщением, ниже — новое.`,
+      'Порог перекошен нарочно: ошибочная склейка стирает работу Claude, а лишнее сообщение ничего не ломает.',
+      'Модели уходит: этот промпт, прошлое сообщение, пауза и новая фраза.',
+    ],
+    early: (c) => [
+      `Ответ — вероятность «это продолжение». От ${f(c.sure)} — Claude останавливается сразу, не дожидаясь конца фразы.`,
+      'Вопрос повторяется на каждом новом куске текста, пока фраза звучит. Куда её отправить, всё равно решает вопрос 2 по всей фразе.',
+      'Модели уходит: этот промпт, прошлое сообщение, пауза и начало новой фразы.',
+    ],
+  }
   const NEAR = 0.5 // метка разметки относится к паузе, если лежит в ней или рядом (секунды)
 
   let cfg = $state(null)
@@ -190,12 +208,13 @@
       </div>
 
       <div class="pane">
+        {#snippet why()}<span class="help flat" tabindex="0">?<div class="pop">{#each WHY[qn](cfg) as line}<p>{line}</p>{/each}</div></span>{/snippet}
         {#if vs[qn]}
-          <div class="pane-h"><h2>Промпт</h2><button class="mini danger" onclick={drop}>удалить</button></div>
+          <div class="pane-h"><span class="h"><h2>Промпт</h2>{@render why()}</span><button class="mini danger" onclick={drop}>удалить</button></div>
           <input class="name" bind:value={cur.name} oninput={() => (dirty = true)} placeholder="Название варианта" />
           <textarea bind:value={cur.text} oninput={() => (dirty = true)} onkeydown={keys} rows="7" placeholder="Текст промпта"></textarea>
         {:else}
-          <div class="pane-h"><h2 title="Этот промпт сейчас стоит в listen.py. Чтобы менять — «+ новый» сделает копию.">Промпт — как в gv</h2><button class="mini" onclick={add}>править копию</button></div>
+          <div class="pane-h"><span class="h"><h2 title="Этот промпт сейчас стоит в listen.py. Чтобы менять — «+ новый» сделает копию.">Промпт — как в gv</h2>{@render why()}</span><button class="mini" onclick={add}>править копию</button></div>
           <textarea value={cur.text} readonly rows="7"></textarea>
         {/if}
         {#if qn === 'turn'}
@@ -343,6 +362,14 @@
   .legend { display: none; position: absolute; top: 32px; right: 0; z-index: 3; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--deep); border: 1px solid var(--line2); border-radius: 10px;
     color: var(--dim); font-size: 12px; font-weight: 400; line-height: 18px; text-align: left; white-space: nowrap; cursor: default; box-shadow: 0 8px 24px rgba(0, 0, 0, .4) }
   .help:hover .legend, .help:focus .legend { display: flex }
+  .pane-h { position: relative }
+  .h { display: flex; align-items: center; gap: 8px }
+  .help.flat { position: static; width: 18px; height: 18px; line-height: 18px; font-size: 11px }
+  .pop { display: none; position: absolute; bottom: 28px; left: 0; right: 0; z-index: 3; padding: 12px 14px; background: var(--deep); border: 1px solid var(--line2); border-radius: 10px;
+    color: var(--dim); font-size: 12.5px; font-weight: 400; line-height: 1.5; text-align: left; cursor: default; box-shadow: 0 8px 24px rgba(0, 0, 0, .4) }
+  .pop p { margin: 0 0 8px }
+  .pop p:last-child { margin: 0 }
+  .help:hover .pop, .help:focus .pop { display: block }
   .legend .gap { margin: 0 8px 0 0; font-style: normal; display: inline-block; min-width: 52px; text-align: center; box-sizing: border-box }
 
   table { border-collapse: collapse; width: 100%; margin: 0 0 8px }
