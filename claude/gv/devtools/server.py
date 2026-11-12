@@ -11,7 +11,7 @@
     plain  — тот же текст без знаков и заглавных;
     socket — звук отрезка заново через поток Deepgram с настройками listen.py (платно; кнопкой, результат кешируется рядом с записью).
 Прогон — та же логика, что в listen.py, три вопроса (QUESTIONS), у каждого свои варианты промпта со страницы:
-    turn  — «мысль закончена?» на паузах Deepgram (speech_final): реплика закрыта по ответу «complete» или PAUSE_MS без текста;
+    turn  — «мысль закончена?» на паузах Deepgram (speech_final): реплика закрыта по ответу «complete» или тишиной — её длина по уверенности ответа (listen.patience);
     early — «начало продолжения?» по началу следующей реплики (черновики и куски), будто Claude занят прошлой: да — его ход остановлен;
     route — «продолжение?» на каждом стыке реплик: дописать к прошлому сообщению или начать новое.
 Ответы кешируются в памяти.
@@ -187,16 +187,18 @@ def hearing(chunks: list[dict]) -> list[str]:
 
 
 async def run(chunks: list[dict], prompts: dict, fmt: str) -> dict:
-    """Логика listen.py по кускам. turns[i] — ответ «мысль закончена?» после куска i; ends — куски, на которых реплика закрыта;
+    """Логика listen.py по кускам. turns[i] — ответ «мысль закончена?» после куска i (wait — сколько тишины после него ждём); ends — куски, на которых реплика закрыта;
     early и steps — по стыку реплик (at — последний кусок прошлой): ранняя проверка по началу новой и «продолжение?» по всей."""
     turns: list = [None] * len(chunks)
     ends, parts = [], []
     for i, c in enumerate(chunks):
         parts.append(c["text"])
-        closed = c["gap"] is None or c["gap"] * 1000 >= listen.PAUSE_MS
+        wait = listen.PAUSE_MS / 1000  # сколько тишины закрывает реплику без «complete»: как listen.patience
         if c["sf"]:
-            turns[i] = await turn(prompts["turn"], " ".join(parts))
-            closed = closed or turns[i]["v"] == "complete"
+            t = await turn(prompts["turn"], " ".join(parts))
+            wait = 0 if t["v"] == "complete" else listen.patience(t["v"], t["p"])
+            turns[i] = {**t, "wait": round(wait, 1)}
+        closed = c["gap"] is None or not wait or c["gap"] >= wait
         if closed:
             ends.append(i)
             parts = []

@@ -5,7 +5,8 @@ Agents как библиотеки, без сервера и сессии LiveKi
 
 Текст — без знаков препинания и заглавных (punctuate и smart_format выключены): Deepgram сам ставил точку на паузе, и классификатор
 принимал её за конец мысли. Паузы слышит сам Deepgram. Реплика кончается, когда он сказал «речь кончилась» (speech_final или UtteranceEnd) и классификатор
-по тексту отвечает «мысль закончена»; не закончена или он не ответил — когда PAUSE_MS нет нового текста.
+по тексту отвечает «мысль закончена»; не закончена — когда нового текста нет столько, сколько он в этом уверен (patience:
+от QUICK_MS до PAUSE_MS, «подожди» — LONG_MS); не ответил — PAUSE_MS.
 
 Куда реплику — тот же классификатор, вероятность: продолжает ли она последний переданный ask (договаривает, уточняет,
 исправляет). Да — ask с replaces=N: ядро склеит текст и откатит №N. Нет — новая мысль: пока Claude занят — quick, свободен — ask.
@@ -40,7 +41,10 @@ from journal import emit, log, trace, trace_open
 
 RATE = 16000
 BLOCK_S = 0.02  # блок микрофона
-PAUSE_MS = int(os.environ.get("GV_PAUSE_MS", 2500))  # столько без нового текста — реплика закончена в любом случае
+PAUSE_MS = int(os.environ.get("GV_PAUSE_MS", 2500))  # столько без нового текста — реплика закончена: классификатор уверен, что человек договорит, или не ответил
+QUICK_MS = 700  # столько же — когда он в «договорит» не уверен
+LONG_MS = 4000  # и столько — когда человек думает или просил подождать
+DOUBT, CERTAIN = 0.5, 0.9  # уверенность в «договорит»: ниже первой — ждём QUICK_MS, выше второй — PAUSE_MS, между — по прямой
 UTTERANCE_END_MS = 1000  # UtteranceEnd Deepgram: столько без новых слов; меньше 1000 он не принимает
 DEEPGRAM = dict(model="nova-3", language="ru", punctuate=False, smart_format=False, filler_words=False, vad_events=True,
                 utterance_end_ms=UTTERANCE_END_MS)  # настройки потока; без знаков — см. шапку
@@ -73,6 +77,15 @@ EARLY = {"continues": Probability(
     "закончил и начинает новую мысль, если начало само по себе звучит как новая мысль.")}
 
 logging.basicConfig(level=logging.WARNING)  # в ~/.claude/gv.out — только сбои библиотек
+
+
+def patience(verdict: str, p: float) -> float:
+    """Сколько секунд тишины ждать после ответа «мысль не закончена»: чем слабее уверенность, тем меньше. Закрыть фразу рано — дёшево
+    (заговорит снова — ранняя проверка остановит Claude, и фраза доклеится), ждать зря — дорого каждый раз."""
+    if verdict == "long":
+        return LONG_MS / 1000
+    sure = min(1, max(0, (p - DOUBT) / (CERTAIN - DOUBT)))
+    return (QUICK_MS + (PAUSE_MS - QUICK_MS) * sure) / 1000
 
 
 def env(path: str) -> dict:
@@ -218,6 +231,7 @@ class Turns:
         self.parts: list[str] = []
         self.closed: float | None = None  # когда закрыта прошлая реплика
         self.pause: float | None = None
+        self.last = 0.0  # когда пришёл последний кусок текста: тишина считается от него
         self.asking: asyncio.Task | None = None
         self.waiting: asyncio.TimerHandle | None = None
 
@@ -229,7 +243,8 @@ class Turns:
         elif ev.type == SpeechEventType.FINAL_TRANSCRIPT and text:
             self.more()
             self.parts.append(text)
-            self.waiting = asyncio.get_running_loop().call_later(PAUSE_MS / 1000, self.close)
+            self.last = time.monotonic()
+            self.wait(PAUSE_MS / 1000)
             self.listen.hearing(" ".join(self.parts), self.pause)
         elif ev.type == SpeechEventType.END_OF_SPEECH and self.parts:
             self.asking = asyncio.create_task(self.ask(" ".join(self.parts)))
@@ -243,15 +258,27 @@ class Turns:
                 pending.cancel()
         self.asking = self.waiting = None
 
+    def wait(self, silence: float) -> None:
+        """Закрыть реплику, когда от последнего куска текста пройдёт silence секунд тишины."""
+        if self.waiting:
+            self.waiting.cancel()
+        self.waiting = asyncio.get_running_loop().call_later(max(0, self.last + silence - time.monotonic()), self.close)
+
     async def ask(self, text: str) -> None:
         t0 = time.monotonic()
         try:
             r = (await self.listen.decisions.evaluate(input=f"user: {text}", decisions=TURN, conn_options=TURN_WAIT)).results["turn"]
         except Exception as ex:  # noqa: BLE001 — не ответил: реплику закроет пауза без текста
             return log("turn.check.error", error=f"{type(ex).__name__}: {ex}")
-        log("turn.check", verdict=r.value, p=round((r.probabilities or {}).get(r.value, 0), 2), s=round(time.monotonic() - t0, 2), text=text)
-        if r.value == "complete" and self.parts:
+        p = (r.probabilities or {}).get(r.value, 0)
+        silence = None if r.value == "complete" else patience(r.value, p)
+        log("turn.check", verdict=r.value, p=round(p, 2), s=round(time.monotonic() - t0, 2), wait=silence and round(silence, 1), text=text)
+        if not self.parts:
+            return
+        if silence is None:
             self.close()
+        else:
+            self.wait(silence)
 
     def close(self) -> None:
         if self.waiting:

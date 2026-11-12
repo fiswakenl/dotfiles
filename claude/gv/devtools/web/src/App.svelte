@@ -44,7 +44,7 @@
       if (!t && !closed) return { asked: false }
       const timer = closed && t?.v !== 'complete'
       return { asked: true, split: closed, p: t?.p, timer, input: t?.input,
-        text: (t ? `${TURN[t.v]} ${f(t.p)}` : 'Deepgram паузы не услышал') + (timer ? ` · закрыл таймер ${sec(cfg.pause_ms / 1000)}` : '') }
+        text: (t ? `${TURN[t.v]} ${f(t.p)}` : 'Deepgram паузы не услышал') + (timer ? ` · закрыла тишина ${sec(t?.wait ?? cfg.pause_ms / 1000)}` : t && !closed ? ` · ждёт ${sec(t.wait)}` : '') }
     }
     if (q === 'route') {
       const s = r.steps.find((x) => x.at === i)
