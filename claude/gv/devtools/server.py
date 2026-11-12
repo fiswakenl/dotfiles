@@ -17,7 +17,7 @@
 Ответы кешируются в памяти.
 
 Ручки: GET /api/config — записи, варианты вопросов, форматы входа; GET /api/source?rec&from&to&kind — куски с паузами;
-POST /api/run {rec, from, to, kind, prompts: {turn, route, early}, input} — прогон; POST /api/replay {rec, from, to} — звук заново через Deepgram;
+POST /api/run {rec, from, to, kind, prompts: {turn, route, early}, input: {route, early: {pack, words}}} — прогон; POST /api/replay {rec, from, to} — звук заново через Deepgram;
 GET /api/audio — звук отрезка (WAV); GET/POST /api/labels — где на самом деле начинается новое сообщение (секунды от начала отрезка,
 размечаешь на странице; лежит рядом с записью: <запись>.labels.json). Время кусков везде — секунды от начала отрезка.
 Варианты вопросов — prompts.json рядом ({вопрос: [варианты]}): правятся на странице и сохраняются туда (POST /api/prompts).
@@ -51,21 +51,37 @@ QUESTIONS = {"turn": listen.TURN["turn"].prompt, "route": listen.QUESTION["conti
 STATE = "Claude работает над ней"  # в devtools прошлая реплика всегда в работе
 
 
-def fields(prev: str, new: str, pause: float, early: bool) -> dict:
-    """Что видит «продолжение?»: prev — то, что уже ушло (с прошлыми склейками), new — новая реплика или её начало (early).
-    Содержание одно на все форматы — INPUTS отличаются только упаковкой."""
-    return {"до_паузы": prev, "состояние": STATE, "пауза_сек": round(pause, 1), "начало_после_паузы" if early else "после_паузы": new}
+def words(sec: float) -> str:
+    """Пауза словами: голое число модель читает хуже."""
+    return (f"{sec} с — короткая, человек почти не останавливался" if sec < 1 else
+            f"{sec} с — средняя, человек запнулся или подбирал слово" if sec < 3 else
+            f"{sec} с — долгая, человек замолчал и потом заговорил снова")
+
+
+def fields(prev: str, new: str, pause: float, early: bool, verbal: bool) -> dict:
+    """Что видит «продолжение?»: prev — то, что уже ушло (с прошлыми склейками), new — новая реплика или её начало (early);
+    verbal — пауза словами, а не числом. Содержание одно на все форматы — PACK отличаются только упаковкой."""
+    sec = round(pause, 1)
+    return {"до_паузы": prev, "состояние": STATE, **({"пауза": words(sec)} if verbal else {"пауза_сек": sec}),
+            "начало_после_паузы" if early else "после_паузы": new}
 
 
 def lines(d: dict) -> str:
     new = "Начало новой реплики" if "начало_после_паузы" in d else "Новая реплика"
-    return (f"Предыдущая реплика ({d['состояние']}): {d['до_паузы']}\nПауза в речи перед новой репликой: {d['пауза_сек']} с\n"
+    return (f"Предыдущая реплика ({d['состояние']}): {d['до_паузы']}\n"
+            f"Пауза в речи перед новой репликой: {d.get('пауза') or str(d['пауза_сек']) + ' с'}\n"
             f"{new}: {d.get('после_паузы', d.get('начало_после_паузы'))}")
 
 
 PACK = {"строками": lines, "json": lambda d: json.dumps(d, ensure_ascii=False),
         "xml": lambda d: "\n".join(f"<{k}>{v}</{k}>" for k, v in d.items())}
-INPUTS = {name: (lambda prev, new, pause, early=False, pack=pack: pack(fields(prev, new, pause, early))) for name, pack in PACK.items()}
+
+
+def pack(fmt: dict, prev: str, new: str, pause: float, early: bool = False) -> str:
+    """fmt — {pack: имя из PACK, words: пауза словами}; у «продолжение?» и ранней проверки он свой."""
+    return PACK[fmt["pack"]](fields(prev, new, pause, early, bool(fmt.get("words"))))
+
+
 listen.trace = lambda *a, **k: None  # поток Deepgram — без записи в журнал живого GV
 decisions = listen.openai.DecisionModel(model=listen.DECISIONS_MODEL, api_key=listen.env(".config/openai.env")["OPENAI_API_KEY"])
 cache: dict = {}
@@ -197,7 +213,7 @@ def hearing(chunks: list[dict]) -> list[str]:
     return [t for i, t in enumerate(out) if i == 0 or t != out[i - 1]]
 
 
-async def run(chunks: list[dict], prompts: dict, fmt: str) -> dict:
+async def run(chunks: list[dict], prompts: dict, fmt: dict) -> dict:
     """Логика listen.py по кускам. turns[i] — ответ «мысль закончена?» после куска i (wait — сколько тишины после него ждём); ends — куски, на которых реплика закрыта;
     early и steps — по стыку реплик (at — последний кусок прошлой): ранняя проверка по началу новой и «продолжение?» по всей."""
     turns: list = [None] * len(chunks)
@@ -220,12 +236,12 @@ async def run(chunks: list[dict], prompts: dict, fmt: str) -> dict:
         pause = chunks[ends[k - 1]]["gap"]
         asks = []
         for text in hearing(chunks[bounds[k][0]:bounds[k][1] + 1]):
-            inp = INPUTS[fmt](sent, text, pause, early=True)
+            inp = pack(fmt["early"], sent, text, pause, early=True)
             asks.append({"text": text, "p": await route(prompts["early"], inp), "input": inp})
             if asks[-1]["p"] is not None and asks[-1]["p"] >= listen.SURE:
                 break  # ход Claude остановлен — дальше не спрашиваем
         early.append({"at": ends[k - 1], "pause": pause, "asks": asks})
-        inp = INPUTS[fmt](sent, phrases[k], pause)
+        inp = pack(fmt["route"], sent, phrases[k], pause)
         p = await route(prompts["route"], inp)
         steps.append({"at": ends[k - 1], "pause": pause, "p": p, "input": inp})
         sent = sent + " " + phrases[k] if p is not None and p >= listen.SURE else phrases[k]
@@ -245,7 +261,7 @@ def prompts() -> dict:
 
 async def config(_req):
     recs = sorted(p.stem for p in TRACES.glob("*.jsonl"))
-    return web.json_response({"recs": recs, "prompts": prompts(), "inputs": list(INPUTS), "sure": listen.SURE,
+    return web.json_response({"recs": recs, "prompts": prompts(), "inputs": list(PACK), "sure": listen.SURE,
                               "pause_ms": listen.PAUSE_MS, "quick_ms": listen.QUICK_MS, "long_ms": listen.LONG_MS, "turn_options": listen.TURN["turn"].options})
 
 

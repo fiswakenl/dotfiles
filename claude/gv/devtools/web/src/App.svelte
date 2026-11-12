@@ -31,7 +31,8 @@
 
   let cfg = $state(null)
   let rec = $state('20261110-103304'), from = $state('10:36:20'), to = $state('10:37:20')
-  let input = $state('строками')
+  // в каком виде второму и третьему вопросу подаются реплики: упаковка и пауза словами или числом; по умолчанию — лучшие на замере
+  let fmt = $state({ route: { pack: 'xml', words: true }, early: { pack: 'строками', words: false } })
   let qn = $state('route') // выбранный вопрос
   let vs = $state({ turn: 0, route: 0, early: 0 }) // выбранный вариант промпта у каждого вопроса
   let results = $state({}) // ключ → {chunks, turns, ends, steps, early} | {error}
@@ -43,7 +44,7 @@
 
   // прогон зависит от варианта каждого из трёх вопросов: у вопроса q берём вариант v, у остальных — выбранные
   const pick = (q, v) => ({ ...vs, [q]: v })
-  const key = (k, q = qn, v = vs[q]) => { const t = pick(q, v); return `${rec}|${from}|${to}|${k}|${t.turn}|${t.route}|${t.early}|${input}` }
+  const key = (k, q = qn, v = vs[q]) => { const t = pick(q, v); return `${rec}|${from}|${to}|${k}|${t.turn}|${t.route}|${t.early}|${JSON.stringify(fmt)}` }
   const f = (x) => (x == null ? '—' : x.toFixed(2).replace('.', ','))
   const sec = (x) => (x == null ? '' : Math.max(0, x).toFixed(1).replace('.', ',') + ' с')
   const glue = (p) => p != null && p >= cfg.sure
@@ -94,7 +95,7 @@
       const id = key(k, q, v), t = pick(q, v)
       if (results[id] || asked[id]) return
       const prompts = Object.fromEntries(Object.keys(QS).map((x) => [x, cfg.prompts[x][t[x]].text]))
-      jobs.push((asked[id] = api('run', { rec, from, to, kind: k, prompts, input }).then((r) => { results[id] = r; delete asked[id] })))
+      jobs.push((asked[id] = api('run', { rec, from, to, kind: k, prompts, input: fmt }).then((r) => { results[id] = r; delete asked[id] })))
     })
     if (!jobs.length) return
     busy = 'гоняю Decisions…'
@@ -115,7 +116,8 @@
     await fill()
   }
   const choose = (v, q = qn) => { vs[q] = v; fill() }
-  const setInput = (i) => { input = i; fill() }
+  const setPack = (i) => { fmt[qn].pack = i; fill() }
+  const setWords = (w) => { fmt[qn].words = w; fill() }
   async function replay() {
     busy = 'звук заново через Deepgram, ~минута…'
     await api('replay', { rec, from, to })
@@ -149,7 +151,11 @@
   }
   const keys = (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); run() } }
 
-  $effect(() => { api('config').then((c) => { cfg = c; load() }) })
+  $effect(() => { api('config').then((c) => {
+    vs.route = Math.max(0, c.prompts.route.findIndex((p) => p.name === 'в одно сообщение')) // лучший на замере
+    cfg = c
+    load()
+  }) })
 
   let Q = $derived(QS[qn])
   let list = $derived(cfg?.prompts[qn])
@@ -168,7 +174,11 @@
     <span class="grow"></span>
     {#if qn !== 'turn'}
       <span class="dim small" title="В каком виде модели подаются прошлая реплика, пауза и новая: содержание одно, отличается упаковка">Вход</span>
-      <div class="seg">{#each cfg.inputs as i}<button class:on={input === i} onclick={() => setInput(i)}>{i}</button>{/each}</div>
+      <div class="seg">{#each cfg.inputs as i}<button class:on={fmt[qn].pack === i} onclick={() => setPack(i)}>{i}</button>{/each}</div>
+      <span class="dim small">Пауза</span>
+      <div class="seg" title="Пауза числом («16.9») или словами («16.9 с — долгая, человек замолчал и потом заговорил снова»)">
+        <button class:on={!fmt[qn].words} onclick={() => setWords(false)}>числом</button><button class:on={fmt[qn].words} onclick={() => setWords(true)}>словами</button>
+      </div>
     {/if}
     <span class="help" tabindex="0">?<div class="legend">
         <span><i class="gap">0,7 с</i> не спрашивали</span>
@@ -292,7 +302,7 @@
   :global(:root) { color-scheme: dark; --bg: #212121; --deep: #171717; --hover: #2f2f2f; --chip: #333; --line: rgba(255, 255, 255, .1); --line2: rgba(255, 255, 255, .2);
     --text: #f3f3f3; --dim: #afafaf; --blue: #0285ff; --green: #1a9b63; --red: #e5484d; --orange: #d9822b }
   :global(body) { font: 14px/1.5 ui-sans-serif, -apple-system, 'Helvetica Neue', system-ui, sans-serif; color: var(--text); background: var(--bg); margin: 0; -webkit-font-smoothing: antialiased }
-  header { display: flex; gap: 8px; align-items: center; height: 52px; box-sizing: border-box; padding: 0 20px 0 24px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2 }
+  header { display: flex; gap: 8px; align-items: center; white-space: nowrap; height: 52px; box-sizing: border-box; padding: 0 16px 0 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2 }
   h1 { font-size: 18px; font-weight: 600; margin: 0 8px 0 0 }
   h2 { font-size: 14px; font-weight: 600; margin: 0 }
   .grow { flex: 1 }
@@ -304,7 +314,8 @@
   button { cursor: pointer; font-weight: 500 }
   button:hover { background: var(--hover) }
   input:focus, select:focus, textarea:focus { outline: none; border-color: var(--text) }
-  header input { padding: 5px 8px; text-align: center }
+  header input { padding: 5px 6px; text-align: center }
+  header > button { padding: 5px 10px }
   .ghost { border-color: transparent }
   .primary, .primary:hover { background: #fff; color: #0d0d0d; border-color: #fff; font-weight: 600 }
   .primary:hover { opacity: .88 }
@@ -327,7 +338,7 @@
   .name, textarea { display: block; width: 100%; padding: 8px 10px; margin-bottom: 8px }
   textarea { resize: vertical; line-height: 1.5 }
   .seg { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--line2); border-radius: 8px }
-  .seg button { border: 0; border-radius: 6px; padding: 3px 12px; color: var(--dim) }
+  .seg button { border: 0; border-radius: 6px; padding: 3px 8px; color: var(--dim) }
   .seg button.on { background: var(--hover); color: var(--text) }
   summary { cursor: pointer; font-weight: 600; padding-left: 8px }
   .drawer summary, .pane details summary { font-weight: 400; padding: 0 }
@@ -351,7 +362,7 @@
   .gap.good { background: var(--green) }
   .gap.wrong { background: var(--red); color: #fff }
   .gap.sel, button.gap.sel:hover { background: #fff; color: #0d0d0d; filter: none }
-  .help { position: relative; width: 24px; height: 24px; line-height: 24px; text-align: center; border: 1px solid var(--line2); border-radius: 50%; color: var(--dim); font-size: 12px; font-weight: 600; cursor: help }
+  .help { position: relative; flex: none; width: 24px; height: 24px; line-height: 24px; text-align: center; border: 1px solid var(--line2); border-radius: 50%; color: var(--dim); font-size: 12px; font-weight: 600; cursor: help }
   .help:hover, .help:focus { color: var(--text); border-color: var(--text); outline: none }
   .legend { display: none; position: absolute; top: 32px; right: 0; z-index: 3; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--deep); border: 1px solid var(--line2); border-radius: 10px;
     color: var(--dim); font-size: 12px; font-weight: 400; line-height: 18px; text-align: left; white-space: nowrap; cursor: default; box-shadow: 0 8px 24px rgba(0, 0, 0, .4) }
