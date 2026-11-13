@@ -3,9 +3,9 @@ description: "Голос GV: решать, склеить реплику или 
 allowed-tools: Bash(~/.claude/commands/gv/decide.sh *)
 ---
 
-# /gv:decide-gemini
+# /gv:dc-gemini
 
-Склеить реплику с прошлой или отправить отдельно, решает Gemini Decision; обратно — `/gv:decide-openai`. Чем распознавать речь — `/gv:openai`, `/gv:deepgram`.
+Склеить реплику с прошлой или отправить отдельно, решает Gemini Decision; обратно — `/gv:dc-openai`. Чем распознавать речь — `/gv:openai`, `/gv:deepgram`.
 
 !`~/.claude/commands/gv/decide.sh gemini 2>&1`
 
