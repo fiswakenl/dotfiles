@@ -1,14 +1,19 @@
-"""Слух GV: микрофон → Deepgram → реплики → решение, куда их отправить. Deepgram и классификатор OpenAI Decisions — плагины LiveKit
-Agents как библиотеки, без сервера и сессии LiveKit.
+"""Слух GV: микрофон → цикл разговора LiveKit Agents → реплики → решение, куда их отправить. Цикл — AgentSession как библиотека:
+без сервера, комнаты и аккаунта LiveKit, без модели-собеседника и голоса; мозг — Claude Code.
 
-    микрофон ──весь звук──▶ Deepgram (nova-3) ──текст──▶ Turns ──реплика──▶ решение ──▶ core.call(ask | quick)
+    микрофон ──звук──▶ AgentSession ─┬─ распознавание: Deepgram (nova-3) | OpenAI ──текст──┐
+                                     ├─ детектор речи Silero, локальный                     ├─▶ реплика ──▶ решение ──▶ core.call(ask | quick)
+                                     └─ конец реплики: модель по звуку, локальная (Ending) ──┘
 
-Текст — без знаков препинания и заглавных (punctuate и smart_format выключены): Deepgram сам ставил точку на паузе, и классификатор
-принимал её за конец мысли. Паузы слышит сам Deepgram. Реплика кончается, когда он сказал «речь кончилась» (speech_final или UtteranceEnd) и классификатор
-по тексту отвечает «мысль закончена»; не закончена — когда нового текста нет столько, сколько он в этом уверен (patience:
-от QUICK_MS до PAUSE_MS, «подожди» — LONG_MS); не ответил — PAUSE_MS.
+Цикл сам ведёт детектор речи, поток распознавания (и открывает его заново после обрыва), копит куски текста и объявляет конец
+реплики. Наше в нём — три гнезда: вход звука (Sound), узел распознавания (Ear.stt_node) и детектор конца реплики (Ending).
 
-Куда реплику — тот же классификатор, вероятность: продолжает ли она последний переданный ask (договаривает, уточняет,
+Конец реплики. Речь стихла — локальная модель turn-detector-v1-mini по последним 1,2 с звука отвечает вероятностью «человек
+договорил»: не ниже END_SURE — реплика закрывается через QUICK_MS тишины, ниже — через PAUSE_MS. Заговорил раньше — ожидание
+отменяется. Порог и обе паузы подобраны на записях диктовки (tests/loop_bench.py): порога для русского в пакете нет.
+Текст — без знаков препинания и заглавных: у Deepgram punctuate и smart_format выключены, у OpenAI их снимает Segments.
+
+Куда реплику — классификатор OpenAI Decisions, вероятность: продолжает ли она последний переданный ask (договаривает, уточняет,
 исправляет). Да — ask с replaces=N: ядро склеит текст и откатит №N. Нет — новая мысль: пока Claude занят — quick, свободен — ask.
 Неуверенное «да» — новая мысль: ошибочная поправка стёрла бы работу Claude, лишнее сообщение — нет.
 Тот же вопрос задаётся и рано — по первым словам новой фразы, пока Claude работает над последней репликой: «да» останавливает его
@@ -16,18 +21,19 @@ Agents как библиотеки, без сервера и сессии LiveKi
 Оба видят паузу перед фразой, и в вопросе сказано, что она значит: без этого классификатор её не замечал (17 с тишины — «продолжение» 0,86).
 Вопрос по всей фразе получает вход тегами и паузу словами (said): так он на замере в devtools делит увереннее всего; ранний — строками (state).
 
-Вместо Deepgram слушать может OpenAI (gpt-live-transcribe по сокету Realtime): команды /gv:openai и /gv:deepgram пишут выбор в ~/.claude/gv.ears (GV_EARS в окружении — важнее).
-Дальше всё то же — Turns и три вопроса; отличия прячет Segments: OpenAI ставит знаки и заглавные (убираем), конца речи не слышит
-(его ловит локальный Silero из плагина — VAD_SILENCE_S тишины) и текст куска отдаёт уже после «речь кончилась», а не до. Ходит через
-HTTPS_PROXY; список KEYWORDS подсказывает ему термины («Claude Code», а не «Cloud код»). Тишину в него не шлём (Gate): он берёт за
-каждую секунду отправленного звука, даже за нули, — сокет при этом открыт и тёплый.
+Чем слушать — Deepgram или OpenAI (gpt-live-transcribe по сокету Realtime): команды /gv:openai и /gv:deepgram пишут выбор в
+~/.claude/gv.ears (GV_EARS в окружении — важнее). Отличия OpenAI прячет узел распознавания: в него идёт только речь (speech) — он
+берёт за каждую секунду отправленного звука, даже за нули, а сокет без звука открыт и тёплый бесплатно; текст куска он отдаёт
+через секунду после конца речи, поэтому Ending ждёт текст на каждый услышанный конец речи, иначе запоздавший кусок ушёл бы
+отдельной репликой. Ходит через HTTPS_PROXY; список KEYWORDS подсказывает ему термины («Claude Code», а не «Cloud код»).
 
-Связь с Deepgram: подключение и обрыв ловит плагин (таймаут подключения, тишина в сокете); сдался — поток пересоздаётся через
-RETRY_S, звук за это время не копится, вечно. Ходит напрямую, без прокси: сон мака и туннель его не касаются.
+Связь с распознаванием: подключение и обрыв ловит плагин (таймаут подключения, тишина в сокете); поток сдался — узел ждёт RETRY_S,
+и цикл открывает новый, вечно. Звук, накопленный без связи, в новый поток не идёт (STALE_S). Deepgram ходит напрямую, без
+прокси: сон мака и туннель его не касаются. Закрылась сама сессия цикла — поднимается новая.
 
-Всё, что пришло от Deepgram, — в запись запуска (journal.trace): текст с флагами и словами, события SpeechStarted и UtteranceEnd,
-звук микрофона в WAV. Ключи: Deepgram — DEEPGRAM_API_KEY в ~/.config/deepgram.env, OpenAI — OPENAI_API_KEY в ~/.config/openai.env
-(прокси — HTTPS_PROXY из окружения).
+Всё услышанное — в запись запуска (journal.trace): текст с флагами и словами (stt.interim, stt.final), события Deepgram SpeechStarted
+и UtteranceEnd, ответ модели конца реплики (turn.check), отсечка тишины (gate.sent), звук микрофона в WAV. Ключи: Deepgram —
+DEEPGRAM_API_KEY в ~/.config/deepgram.env, OpenAI — OPENAI_API_KEY в ~/.config/openai.env (прокси — HTTPS_PROXY из окружения).
 """
 import asyncio
 import logging
@@ -39,22 +45,25 @@ from collections import deque
 from pathlib import Path
 
 import aiohttp
+import numpy as np
 import sounddevice as sd
 from livekit import rtc
-from livekit.agents import APIConnectOptions, APIError, inference
-from livekit.agents.vad import VADEventType
+from livekit.agents import Agent, AgentSession, APIConnectOptions, APIError, StopResponse, inference
 from livekit.agents.llm import Choice, Probability
 from livekit.agents.stt import SpeechEventType
+from livekit.agents.vad import VADEventType
+from livekit.agents.voice import io
+from livekit.agents.voice.agent_session import SessionConnectOptions
+from livekit.local_inference import EOT, EOT_MAX_SAMPLES
 from livekit.plugins import deepgram, openai
 
 from journal import emit, log, trace, trace_open
 
 RATE = 16000
 BLOCK_S = 0.02  # блок микрофона
-PAUSE_MS = int(os.environ.get("GV_PAUSE_MS", 2500))  # столько без нового текста — реплика закончена: классификатор уверен, что человек договорит, или не ответил
-QUICK_MS = 700  # столько же — когда он в «договорит» не уверен
-LONG_MS = 4000  # и столько — когда человек думает или просил подождать
-DOUBT, CERTAIN = 0.5, 0.9  # уверенность в «договорит»: ниже первой — ждём QUICK_MS, выше второй — PAUSE_MS, между — по прямой
+END_SURE = 0.4  # вероятность «договорил» от модели по звуку: не ниже — ждём QUICK_MS тишины, ниже — PAUSE_MS
+QUICK_MS = 800  # столько тишины закрывает реплику, когда модель уверена, что человек договорил
+PAUSE_MS = int(os.environ.get("GV_PAUSE_MS", 2500))  # и столько — когда не уверена
 UTTERANCE_END_MS = 1000  # UtteranceEnd Deepgram: столько без новых слов; меньше 1000 он не принимает
 DEEPGRAM = dict(model="nova-3", language="ru", punctuate=False, smart_format=False, filler_words=False, vad_events=True,
                 utterance_end_ms=UTTERANCE_END_MS)  # настройки потока; без знаков — см. шапку
@@ -63,25 +72,23 @@ EARS = os.environ.get("GV_EARS") or (EARS_FILE.read_text().strip() if EARS_FILE.
 KEYWORDS = ["Claude Code", "Claude", "Codex", "Deepgram", "devtools"]  # термины, которые OpenAI иначе слышит по-своему
 OPENAI_STT = dict(model="gpt-live-transcribe", language="ru", keywords=KEYWORDS)
 ANSWER_CHARS = 300  # столько от начала и от конца ответа Claude видит «продолжение?»: суть в первых строках, вопрос человеку — в последних
-VAD_SILENCE_S = 0.4  # столько тишины локальный детектор речи считает концом куска для OpenAI
+VAD_SILENCE_S = 0.4  # столько тишины детектор речи плагина OpenAI считает концом куска
+# столько тишины детектор речи цикла считает концом речи — в этот момент спрашиваем модель конца реплики: при хвосте тишины
+# 0,4–0,5 с она реже путает настоящий конец с паузой, чем при 0,25 с. Больше VAD_SILENCE_S: конец куска от плагина OpenAI
+# должен прийти раньше, чтобы Ending уже знал, что текст в пути
+SPEECH_END_S = 0.5
+TEXT_WAIT_S = 2  # дольше текст куска OpenAI не ждём (обычно он приходит за секунду): реплику закроет то, что уже есть
 GATE_BEFORE_S = 0.6  # столько звука до начала речи досылаем в OpenAI: детектор замечает речь с опозданием, начало слова не теряется
 GATE_AFTER_S = 0.8  # столько тишины после речи ещё шлём: больше VAD_SILENCE_S, чтобы плагин успел закрыть кусок
-RETRY_S = 2  # поток Deepgram сдался — новый через столько
-CONNECT = APIConnectOptions(max_retry=0, timeout=10)  # повторы — наш цикл: новый поток не тащит звук, накопленный без связи
-TURN_WAIT = APIConnectOptions(max_retry=0, timeout=2)  # не ответил — реплику закроет пауза без текста
+RETRY_S = 2  # поток распознавания сдался — новый через столько
+STALE_S = 1  # звук старше этого в распознавание не идёт: накопился, пока не было связи
+CONNECT = APIConnectOptions(max_retry=0, timeout=10)  # повторы — наш узел: новый поток не тащит звук, накопленный без связи
+ALWAYS = SessionConnectOptions(stt_conn_options=CONNECT, max_unrecoverable_errors=10**9)  # по умолчанию цикл закрывает сессию после трёх обрывов подряд, а нам слушать вечно
 ROUTE_WAIT = APIConnectOptions(max_retry=0, timeout=5)  # не ответил — новая мысль
 DECISIONS_MODEL = "gpt-6-luna"  # gpt-6-luna-decisions, что плагин берёт по умолчанию, нашему ключу недоступна
 SURE = 0.7  # вероятность продолжения ниже — не поправка, а новая мысль
 STATE = {"queued": "ждёт отправки", "sent": "Claude работает над ней", "answered": "Claude ответил"}
 CUT = "Claude начал отвечать, но человек заговорил снова, и ответ остановлен"
-TURN = {"turn": Choice(
-    "The user is talking to a voice assistant. Their words come from speech recognition, without punctuation, and may have been cut off. Decide whether "
-    "the user's turn is complete. Complete means conversationally complete, not long: one word can be a complete answer, a question "
-    "is complete, a correction is complete.",
-    {"complete": "the user has taken their turn and the assistant should answer",
-     "short": "the user stopped mid-sentence and will continue in a few seconds: the last words leave a phrase open, such as ending "
-              "on a conjunction, a preposition, an article, or an unfinished list or number",
-     "long": "the user needs time to think or asked the assistant to wait, or has only acknowledged the question without answering it"})}
 QUESTION = {"continues": Probability(
     "Ты собираешь диктовку голосом в сообщения для Claude. Вопрос: новую реплику (после_паузы) надо дописать в то же сообщение, "
     "что и предыдущая (до_паузы), а не отправить отдельным?\n"
@@ -103,15 +110,6 @@ logging.basicConfig(level=logging.WARNING)  # в ~/.claude/gv.out — тольк
 def plain(text: str) -> str:
     """Текст как от Deepgram без знаков: строчными, без пунктуации."""
     return re.sub(r"[^\w\s-]", "", text).lower()
-
-
-def patience(verdict: str, p: float) -> float:
-    """Сколько секунд тишины ждать после ответа «мысль не закончена»: чем слабее уверенность, тем меньше. Закрыть фразу рано — дёшево
-    (заговорит снова — ранняя проверка остановит Claude, и фраза доклеится), ждать зря — дорого каждый раз."""
-    if verdict == "long":
-        return LONG_MS / 1000
-    sure = min(1, max(0, (p - DOUBT) / (CERTAIN - DOUBT)))
-    return (QUICK_MS + (PAUSE_MS - QUICK_MS) * sure) / 1000
 
 
 def env(path: str) -> dict:
@@ -145,52 +143,59 @@ class Listen:
     def __init__(self, core) -> None:
         self.core = core
         self.mic = Mic(self)
-        self.turns = Turns(self)
         self.decisions = openai.DecisionModel(model=DECISIONS_MODEL, api_key=os.environ.get("OPENAI_API_KEY") or env(".config/openai.env")["OPENAI_API_KEY"])
-        self.stream = None  # идущий поток распознавания (Deepgram или OpenAI)
+        self.eot = EOT()  # модель конца реплики по звуку: в процессе, без сети
+        self.sound: Sound | None = None  # вход звука идущей сессии цикла
+        self.recent: deque = deque(maxlen=int(EOT_MAX_SAMPLES / RATE / BLOCK_S))  # последние 1,2 с звука: столько слышит модель конца реплики
         self.wav: wave.Wave_write | None = None
         self.audio_t0 = 0.0  # когда пошёл звук записи: от него время кусков в записи запуска
-        self.gate: Gate | None = None  # пропускает в поток только речь (OpenAI)
         self.order = asyncio.Lock()  # реплики решаются по одной, в порядке речи: следующая видит, куда ушла прошлая
+        self.closed: float | None = None  # когда закрыта прошлая реплика
         self.partial = self.asked = ""  # что уже слышно в идущей фразе; по какому её началу уже спросили классификатор
         self.settled = False  # ход Claude этой фразой уже остановлен
         self.checking: asyncio.Task | None = None
         self.tasks: set[asyncio.Task] = set()
 
+    def ears(self, http: aiohttp.ClientSession):
+        """Распознавание по выбору EARS."""
+        if EARS == "openai":
+            stt = openai.STT(api_key=os.environ.get("OPENAI_API_KEY") or env(".config/openai.env")["OPENAI_API_KEY"],
+                             vad=inference.VAD(model="silero", min_silence_duration=VAD_SILENCE_S), **OPENAI_STT)
+            stt._session = http  # зацепка во внутренность плагина: сессию с прокси он параметром не принимает, а свою берёт из задания LiveKit, которого у нас нет
+            return stt
+        return Deepgram(api_key=os.environ.get("DEEPGRAM_API_KEY") or env(".config/deepgram.env")["DEEPGRAM_API_KEY"], http_session=http, **DEEPGRAM)
+
     async def run(self) -> None:
         self.decisions.on("metrics_collected", lambda m: log("decide.metrics", s=round(m.duration, 2), tokens=m.input_tokens))
         self.spawn(self.keep_warm())
         self.wav_path = trace_open().with_suffix(".wav")
-        openai_ears = EARS == "openai"
         # без trust_env: Deepgram — напрямую, мимо HTTPS_PROXY; OpenAI — через него
-        async with aiohttp.ClientSession(proxy=os.environ.get("HTTPS_PROXY") if openai_ears else None) as http:
-            if openai_ears:
-                stt = openai.STT(api_key=os.environ.get("OPENAI_API_KEY") or env(".config/openai.env")["OPENAI_API_KEY"],
-                                 vad=inference.VAD(model="silero", min_silence_duration=VAD_SILENCE_S), **OPENAI_STT)
-                stt._session = http  # плагин берёт сессию из задания LiveKit, которого у нас нет
-                same = Segments(self)
-                self.gate = Gate(self)
-                self.spawn(self.gate.run())
-            else:
-                stt = Deepgram(api_key=os.environ.get("DEEPGRAM_API_KEY") or env(".config/deepgram.env")["DEEPGRAM_API_KEY"],
-                               http_session=http, **DEEPGRAM)
-                same = lambda ev: ev  # noqa: E731
+        async with aiohttp.ClientSession(proxy=os.environ.get("HTTPS_PROXY") if EARS == "openai" else None) as http:
+            stt = self.ears(http)
             self.mic.start()
             log("mic.start", ears=EARS)
             while True:
-                self.stream = stream = stt.stream(conn_options=CONNECT)
+                ear, over = Ear(self), asyncio.Event()
+                session = AgentSession(stt=stt, vad=inference.VAD(model="silero", min_silence_duration=SPEECH_END_S), conn_options=ALWAYS,
+                                       user_away_timeout=None, turn_handling={"turn_detection": Ending(ear),
+                                                                              "endpointing": {"min_delay": QUICK_MS / 1000, "max_delay": PAUSE_MS / 1000}})
+                session.on("user_state_changed", ear.quiet)
+                session.on("close", lambda _: over.set())
+                session.input.audio = sound = Sound()  # вместо комнаты; вывода звука нет вовсе
                 try:
-                    async for ev in stream:
-                        self.turns.on(same(ev))
-                except Exception as ex:  # noqa: BLE001 — поток сдался (обычно APIError): ошибка на страницу, новый поток
+                    await session.start(ear)
+                    self.sound = sound
+                    await over.wait()  # сессия закрылась сама: так быть не должно, но слух от этого умереть не может
+                    self.error("сессия цикла закрылась")
+                except Exception as ex:  # noqa: BLE001
                     self.error(f"{type(ex).__name__}: {ex}")
                 finally:
-                    self.stream = None
-                    await stream.aclose()
+                    self.sound = None
+                    await session.aclose()
                 await asyncio.sleep(RETRY_S)
 
     def audio(self, pcm: bytes) -> None:
-        """Блок звука: в WAV записи и в поток распознавания; связи нет — звук в поток пропадает, в WAV — нет."""
+        """Блок звука: в WAV записи и в цикл; сессии нет — в цикл звук пропадает, в WAV — нет."""
         if self.wav is None:
             self.audio_t0 = time.time()
             self.wav = wave.open(str(self.wav_path), "wb")
@@ -199,17 +204,9 @@ class Listen:
             self.wav.setframerate(RATE)
             trace("audio.start", file=self.wav_path.name, rate=RATE)
         self.wav.writeframes(pcm)
-        if self.gate:
-            self.gate.push(pcm)
-        else:
-            self.send(pcm)
-
-    def send(self, pcm: bytes) -> None:
-        if self.stream:
-            try:
-                self.stream.push_frame(rtc.AudioFrame(pcm, RATE, 1, len(pcm) // 2))
-            except RuntimeError:  # поток уже закрыт: новый вот-вот
-                pass
+        self.recent.append(pcm)
+        if self.sound:
+            self.sound.frames.put_nowait(rtc.AudioFrame(pcm, RATE, 1, len(pcm) // 2, userdata={"at": time.monotonic()}))
 
     def spawn(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -223,7 +220,7 @@ class Listen:
         while True:
             try:
                 t0 = time.monotonic()
-                await self.decisions.evaluate(input="user: привет", decisions=TURN, conn_options=APIConnectOptions(max_retry=0))
+                await self.decisions.evaluate(input="привет", decisions=EARLY, conn_options=APIConnectOptions(max_retry=0))
                 log("turn.warm", s=round(time.monotonic() - t0, 2))
             except Exception as ex:  # noqa: BLE001 — не прогрелось: первый вопрос просто подождёт
                 log("turn.warm.error", error=f"{type(ex).__name__}: {ex}")
@@ -231,7 +228,7 @@ class Listen:
 
     def error(self, why: str) -> None:
         log("recognize.error", error=why[:500])
-        emit({"error": f"Deepgram: {why}"})
+        emit({"error": f"{EARS}: {why}"})
 
     # ── фраза ещё звучит: ранняя проверка ───────────────────────────────────────
     def hearing(self, text: str, pause: float | None) -> None:
@@ -256,6 +253,7 @@ class Listen:
             self.checking.cancel()
         self.partial = self.asked = ""
         self.settled = False
+        self.closed = time.monotonic()
         emit({"me": text})
         self.spawn(self.deliver(text, pause))
 
@@ -284,120 +282,133 @@ class Listen:
             return False
 
 
-class Turns:
-    """Реплики из потока распознавания. Черновики и окончательные куски — в раннюю проверку; «речь кончилась» — вопрос классификатору
-    «мысль закончена?»: да — реплика закрыта. Пауза перед репликой — от конца прошлой до первого куска этой.
-    У Deepgram кусок приходит до «речь кончилась», у OpenAI — после: тогда вопрос задаётся по куску, если человек всё ещё молчит."""
+class Sound(io.AudioInput):
+    """Вход звука цикла вместо комнаты LiveKit: блоки микрофона из Listen.audio."""
+
+    def __init__(self) -> None:
+        super().__init__(label="микрофон")
+        self.frames: asyncio.Queue = asyncio.Queue()
+
+    async def __anext__(self) -> rtc.AudioFrame:
+        return await self.frames.get()
+
+
+class Ear(Agent):
+    """Агент цикла без модели и голоса: только слушает. Через его узел распознавания идут звук и события: черновики и куски текста
+    — в раннюю проверку, конец реплики (on_user_turn_completed) — в решение, куда её. Пауза перед репликой — от конца прошлой
+    до первого текста этой."""
 
     def __init__(self, listen: Listen) -> None:
+        super().__init__(instructions="")
         self.listen = listen
-        self.parts: list[str] = []
-        self.closed: float | None = None  # когда закрыта прошлая реплика
+        self.same = lambda ev: ev  # приводит события распознавания к одному виду: у OpenAI — Segments, свой на каждый поток
+        self.parts: list[str] = []  # куски текста идущей реплики
         self.pause: float | None = None
-        self.last = 0.0  # когда пришёл последний кусок текста: тишина считается от него
-        self.speaking = False  # распознавание слышит речь
-        self.asking: asyncio.Task | None = None
-        self.waiting: asyncio.TimerHandle | None = None
+        self.end: asyncio.Future | None = None  # ответ модели конца реплики на последний конец речи
 
-    def on(self, ev) -> None:
-        text = ev.alternatives[0].text.strip() if ev.alternatives else ""
-        if ev.type == SpeechEventType.START_OF_SPEECH:
-            self.speaking = True
-        elif ev.type == SpeechEventType.INTERIM_TRANSCRIPT and text:
-            self.more()
-            self.listen.hearing(" ".join([*self.parts, text]), self.pause)
-        elif ev.type == SpeechEventType.FINAL_TRANSCRIPT and text:
-            self.more()
-            self.parts.append(text)
-            self.last = time.monotonic()
-            self.wait(PAUSE_MS / 1000)
-            self.listen.hearing(" ".join(self.parts), self.pause)
-            if not self.speaking:
-                self.asking = asyncio.create_task(self.ask(" ".join(self.parts)))
-        elif ev.type == SpeechEventType.END_OF_SPEECH:
-            self.speaking = False
-            self.last = time.monotonic()  # речь кончилась только что: у OpenAI текст последнего куска ещё в пути, а тишина уже идёт
-            if self.parts:
-                self.asking = asyncio.create_task(self.ask(" ".join(self.parts)))
+    def quiet(self, ev) -> None:
+        """Детектор речи цикла сказал «речь кончилась»: последние 1,2 с звука — модели конца реплики, пока в них только что стихшая речь."""
+        if (ev.old_state, ev.new_state) == ("speaking", "listening"):
+            pcm = np.frombuffer(b"".join(self.listen.recent), dtype=np.int16)[-EOT_MAX_SAMPLES:]
+            self.end = asyncio.ensure_future(asyncio.to_thread(self.listen.eot.predict, pcm))
 
-    def more(self) -> None:
-        """Пришёл текст: начало реплики — запомнить паузу перед ней; продолжение — прежние ожидания конца отменить."""
-        if not self.parts and self.pause is None and self.closed is not None:
-            self.pause = time.monotonic() - self.closed
-        for pending in (self.asking, self.waiting):
-            if pending:
-                pending.cancel()
-        self.asking = self.waiting = None
-
-    def wait(self, silence: float) -> None:
-        """Закрыть реплику, когда от последнего куска текста пройдёт silence секунд тишины."""
-        if self.waiting:
-            self.waiting.cancel()
-        self.waiting = asyncio.get_running_loop().call_later(max(0, self.last + silence - time.monotonic()), self.close)
-
-    async def ask(self, text: str) -> None:
+    async def texted(self) -> None:
+        """Ждать текст на каждый конец речи, услышанный плагином OpenAI; придёт — цикл сам спросит о конце реплики заново."""
         t0 = time.monotonic()
-        try:
-            r = (await self.listen.decisions.evaluate(input=f"user: {text}", decisions=TURN, conn_options=TURN_WAIT)).results["turn"]
-        except Exception as ex:  # noqa: BLE001 — не ответил: реплику закроет пауза без текста
-            return log("turn.check.error", error=f"{type(ex).__name__}: {ex}")
-        p = (r.probabilities or {}).get(r.value, 0)
-        silence = None if r.value == "complete" else patience(r.value, p)
-        log("turn.check", verdict=r.value, p=round(p, 2), s=round(time.monotonic() - t0, 2), wait=silence and round(silence, 1), text=text)
-        if not self.parts:
-            return
-        if silence is None:
-            self.close()
-        else:
-            self.wait(silence)
+        while isinstance(self.same, Segments) and self.same.ended and time.monotonic() - t0 < TEXT_WAIT_S:
+            await asyncio.sleep(BLOCK_S)
 
-    def close(self) -> None:
-        if self.waiting:
-            self.waiting.cancel()
-        text, self.parts, self.waiting = " ".join(self.parts), [], None
+    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
+        text, pause, self.parts, self.pause = (new_message.text_content or "").strip(), self.pause, [], None
         if text:
-            self.closed = time.monotonic()
-            self.listen.heard(text, self.pause)
-        self.pause = None
+            self.listen.heard(text, pause)
+        raise StopResponse  # отвечать в цикле некому
+
+    async def stt_node(self, audio, model_settings):
+        """Штатный узел распознавания, вокруг него наше: в поток — только свежий звук (у OpenAI — только речь), события — в запись
+        запуска и раннюю проверку. Поток сдался или кончился — ошибка на страницу, RETRY_S, и цикл открывает новый."""
+        fresh = (f async for f in audio if time.monotonic() - f.userdata.get("at", time.monotonic()) < STALE_S)
+        if EARS == "openai":
+            self.same = Segments(self.listen)  # новый поток — новая очередь концов речи: оборванный на старые уже не ответит
+        try:
+            async for ev in Agent.default.stt_node(self, self.speech(fresh) if EARS == "openai" else fresh, model_settings):
+                ev = self.same(ev)
+                text = ev.alternatives[0].text.strip() if ev.alternatives else ""
+                if text and ev.type in (SpeechEventType.INTERIM_TRANSCRIPT, SpeechEventType.FINAL_TRANSCRIPT):
+                    if not self.parts and self.pause is None and self.listen.closed is not None:
+                        self.pause = time.monotonic() - self.listen.closed
+                    if ev.type == SpeechEventType.FINAL_TRANSCRIPT:
+                        self.parts.append(text)
+                    self.listen.hearing(" ".join(self.parts if ev.type == SpeechEventType.FINAL_TRANSCRIPT else [*self.parts, text]), self.pause)
+                yield ev
+            why = "поток распознавания кончился"
+        except Exception as ex:  # noqa: BLE001 — обычно APIError
+            why = f"{type(ex).__name__}: {ex}"
+        self.listen.error(why)
+        await asyncio.sleep(RETRY_S)
+        raise APIError(why)  # новый поток цикл открывает только после APIError
+
+    async def speech(self, audio):
+        """В поток распознавания — только речь. OpenAI берёт за каждую секунду отправленного звука, даже за нули (сверено со счётом:
+        180 с тишины — 180 с расхода), а за открытый сокет без звука — нет. Свой Silero слушает весь звук: речь началась — в поток
+        уходит запас GATE_BEFORE_S до неё и всё дальше; GATE_AFTER_S тишины — поток снова молчит."""
+        vad = inference.VAD(model="silero", min_silence_duration=GATE_AFTER_S).stream()
+        before: deque = deque(maxlen=int(GATE_BEFORE_S / BLOCK_S))
+        gate = {"open": False, "sent": 0}  # sent — блоков ушло в поток за этот отрезок речи
+
+        async def watch() -> None:
+            async for ev in vad:
+                if ev.type == VADEventType.START_OF_SPEECH:
+                    gate["open"] = True
+                elif ev.type == VADEventType.END_OF_SPEECH and gate["open"]:
+                    trace("gate.sent", s=round(gate["sent"] * BLOCK_S, 1))
+                    gate.update(open=False, sent=0)
+        watching = asyncio.create_task(watch())
+        try:
+            async for frame in audio:
+                vad.push_frame(frame)
+                before.append(frame)
+                while gate["open"] and before:
+                    gate["sent"] += 1
+                    yield before.popleft()
+        finally:
+            watching.cancel()
+            await vad.aclose()
 
 
-class Gate:
-    """В поток распознавания — только речь. OpenAI берёт за каждую секунду отправленного звука, даже за нули (сверено со счётом:
-    180 с тишины — 180 с расхода), а за открытый сокет без звука — нет. Свой Silero слушает весь звук микрофона: речь началась —
-    в поток уходит запас GATE_BEFORE_S до неё и всё дальше; GATE_AFTER_S тишины — поток снова молчит."""
+class Ending:
+    """Детектор конца реплики для цикла: вероятность «человек договорил» от локальной модели по звуку, посчитанная в момент, когда
+    речь стихла (Ear.quiet). Цикл сравнивает её с порогом и ждёт QUICK_MS или PAUSE_MS тишины. Свой, а не штатный детектор пакета
+    с той же моделью: штатный не ждёт запоздавший текст OpenAI, а свой ответ отдаёт только в отладочный журнал.
+    Зацепка: это протокол _TurnDetector из livekit.agents.voice.turn — имя внутреннее, но иначе свой детектор циклу не дать."""
 
-    def __init__(self, listen: "Listen") -> None:
-        self.listen = listen
-        self.vad = inference.VAD(model="silero", min_silence_duration=GATE_AFTER_S).stream()
-        self.before: deque = deque(maxlen=int(GATE_BEFORE_S / BLOCK_S))
-        self.open = False
-        self.sent = 0  # блоков ушло в поток за этот отрезок речи
+    model, provider = "turn-detector-v1-mini", "local"
 
-    def push(self, pcm: bytes) -> None:
-        self.vad.push_frame(rtc.AudioFrame(pcm, RATE, 1, len(pcm) // 2))
-        if self.open:
-            self.sent += 1
-            self.listen.send(pcm)
-        else:
-            self.before.append(pcm)
+    def __init__(self, ear: Ear) -> None:
+        self.ear = ear
 
-    async def run(self) -> None:
-        async for ev in self.vad:
-            if ev.type == VADEventType.START_OF_SPEECH and not self.open:
-                self.open, self.sent = True, len(self.before)
-                for pcm in self.before:
-                    self.listen.send(pcm)
-                self.before.clear()
-            elif ev.type == VADEventType.END_OF_SPEECH and self.open:
-                self.open = False
-                trace("gate.sent", s=round(self.sent * BLOCK_S, 1))
+    async def unlikely_threshold(self, language) -> float:
+        return END_SURE
+
+    async def supports_language(self, language) -> bool:
+        return True
+
+    async def predict_end_of_turn(self, chat_ctx, *, timeout=None) -> float:
+        t0 = time.monotonic()
+        await self.ear.texted()
+        # shield: цикл отменяет этот вопрос, когда приходит новый кусок текста, а ответ модели нужен и следующему вопросу;
+        # нет ответа — текст есть, а речи детектор цикла не слышал: закрываем по короткой паузе
+        p = float(await asyncio.shield(self.ear.end)) if self.ear.end else 1.0
+        log("turn.check", verdict="complete" if p >= END_SURE else "short", p=round(p, 2), s=round(time.monotonic() - t0, 2),
+            wait=(QUICK_MS if p >= END_SURE else PAUSE_MS) / 1000, text=chat_ctx.items[-1].text_content)
+        return p
 
 
 class Segments:
     """События OpenAI — в том же виде, что у Deepgram: текст без знаков и заглавных, в запись запуска — те же stt.interim и stt.final.
     Времени слов у OpenAI нет: кусок размечен одним «словом» от начала до конца речи по локальному детектору (точность около 0,3 с);
-    конец речи приходит раньше текста куска, поэтому концы ждут свои куски в очереди. На каждый конец OpenAI отвечает либо текстом и
-    счётом расхода, либо одним счётом (шум, слов нет) — тогда конец из очереди уходит без куска."""
+    конец речи приходит раньше текста куска, поэтому концы ждут свои куски в очереди (ended). На каждый конец OpenAI отвечает либо
+    текстом и счётом расхода, либо одним счётом (шум, слов нет) — тогда конец из очереди уходит без куска."""
 
     def __init__(self, listen: "Listen") -> None:
         self.listen = listen
@@ -484,3 +495,26 @@ class Mic:
         for i in range(0, len(pcm), step):
             self.listen.audio(pcm[i:i + step])
             await asyncio.sleep(BLOCK_S)
+
+
+# ── только для devtools/server.py ───────────────────────────────────────────────
+# Его страница прогоняет вопрос «мысль закончена?» и ждёт по patience: так слух закрывал реплику до модели по звуку. Слух этим
+# больше не пользуется; блок уйдёт вместе с правкой devtools (в переходе на цикл devtools не менялся).
+LONG_MS = 4000
+DOUBT, CERTAIN = 0.5, 0.9
+TURN = {"turn": Choice(
+    "The user is talking to a voice assistant. Their words come from speech recognition, without punctuation, and may have been cut off. Decide whether "
+    "the user's turn is complete. Complete means conversationally complete, not long: one word can be a complete answer, a question "
+    "is complete, a correction is complete.",
+    {"complete": "the user has taken their turn and the assistant should answer",
+     "short": "the user stopped mid-sentence and will continue in a few seconds: the last words leave a phrase open, such as ending "
+              "on a conjunction, a preposition, an article, or an unfinished list or number",
+     "long": "the user needs time to think or asked the assistant to wait, or has only acknowledged the question without answering it"})}
+
+
+def patience(verdict: str, p: float) -> float:
+    """Сколько секунд тишины ждать после ответа «мысль не закончена»: чем слабее уверенность, тем меньше."""
+    if verdict == "long":
+        return LONG_MS / 1000
+    sure = min(1, max(0, (p - DOUBT) / (CERTAIN - DOUBT)))
+    return (QUICK_MS + (PAUSE_MS - QUICK_MS) * sure) / 1000
