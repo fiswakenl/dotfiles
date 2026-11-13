@@ -150,8 +150,8 @@ async function bridge($, name: string, args: Record<string, unknown>): Promise<a
 
 // ask: в окно Claude как набранное руками; поправка — откат до сообщения прежнего запроса и новый текст. Новое сообщение ядро
 // отдаёт, только когда Claude свободен; поправка откатывает идущий ход сама. Чей ход, узнаём по тексту на его старте (turn.start).
-// Сообщение, как оно выглядит в окне Claude: метка голоса, пометка слуха о скорости, текст.
-const shown = (r: { text: string; note?: string }): string => `${MARK} ${r.note ? `[${r.note}] ` : ""}${r.text}`;
+// Сообщение, как оно выглядит в окне Claude: метка голоса и пометка слуха о скорости, текст — с новой строки.
+const shown = (r: { text: string; note?: string }): string => `${MARK} ${r.note ? `[${r.note}]\n` : ""}${r.text}`;
 
 async function deliver($, r: { id: number; text: string; rewind: number | null; note?: string }): Promise<void> {
   const text = shown(r);
