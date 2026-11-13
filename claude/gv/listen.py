@@ -37,6 +37,8 @@
 DEEPGRAM_API_KEY в ~/.config/deepgram.env, OpenAI — OPENAI_API_KEY в ~/.config/openai.env (прокси — HTTPS_PROXY из окружения).
 """
 import asyncio
+import base64
+import json
 import logging
 import os
 import re
@@ -51,7 +53,7 @@ import sounddevice as sd
 from livekit import rtc
 from livekit.agents import Agent, AgentSession, APIConnectOptions, APIError, StopResponse, inference
 from livekit.agents.llm import Choice, Probability
-from livekit.agents.stt import SpeechEventType
+from livekit.agents.stt import STT, RecognitionUsage, RecognizeStream, SpeechData, SpeechEvent, SpeechEventType, STTCapabilities
 from livekit.agents.vad import VADEventType
 from livekit.agents.voice import io
 from livekit.agents.voice.agent_session import SessionConnectOptions
@@ -70,9 +72,14 @@ UTTERANCE_END_MS = 1000  # UtteranceEnd Deepgram: столько без новы
 DEEPGRAM = dict(model="nova-3", language="ru", punctuate=False, smart_format=False, filler_words=False, vad_events=True,
                 utterance_end_ms=UTTERANCE_END_MS)  # настройки потока; без знаков — см. шапку
 EARS_FILE = Path.home() / ".claude" / "gv.ears"
-EARS = os.environ.get("GV_EARS") or (EARS_FILE.read_text().strip() if EARS_FILE.exists() else "") or "deepgram"  # чем слушать: deepgram | openai
+EARS = os.environ.get("GV_EARS") or (EARS_FILE.read_text().strip() if EARS_FILE.exists() else "") or "deepgram"  # чем слушать: deepgram | openai | gemini
+GATED = EARS in ("openai", "gemini")  # в сокет идёт только речь, конец куска объявляем сами, события приводит к общему виду Segments
 KEYWORDS = ["Claude Code", "Claude", "Codex", "Deepgram", "devtools"]  # термины, которые OpenAI иначе слышит по-своему
 OPENAI_STT = dict(model="gpt-live-transcribe", language="ru", keywords=KEYWORDS)
+GEMINI_LIVE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+GEMINI_STT = {"model": "models/gemini-3.5-transcribe-live", "generationConfig": {"responseModalities": ["TEXT"]},
+              "inputAudioTranscription": {"languageCodes": ["ru-RU"], "customVocabulary": KEYWORDS}}
+GEMINI_SESSION_S = 9 * 60  # сессия Gemini живёт до 10 минут: старше этого меняем на новую, пока человек молчит
 ANSWER_CHARS = 300  # столько от начала и от конца ответа Claude видит «продолжение?»: суть в первых строках, вопрос человеку — в последних
 VAD_SILENCE_S = 0.4  # столько тишины детектор речи плагина OpenAI считает концом куска
 # столько тишины детектор речи цикла считает концом речи — в этот момент спрашиваем модель конца реплики: при хвосте тишины
@@ -196,6 +203,8 @@ class Listen:
                              vad=inference.VAD(model="silero", min_silence_duration=VAD_SILENCE_S), **OPENAI_STT)
             stt._session = http  # зацепка во внутренность плагина: сессию с прокси он параметром не принимает, а свою берёт из задания LiveKit, которого у нас нет
             return stt
+        if EARS == "gemini":
+            return Gemini(http, inference.VAD(model="silero", min_silence_duration=VAD_SILENCE_S))
         return Deepgram(api_key=os.environ.get("DEEPGRAM_API_KEY") or env(".config/deepgram.env")["DEEPGRAM_API_KEY"], http_session=http, **DEEPGRAM)
 
     async def run(self) -> None:
@@ -461,10 +470,10 @@ class Ear(Agent):
         """Штатный узел распознавания, вокруг него наше: в поток — только свежий звук (у OpenAI — только речь), события — в запись
         запуска и раннюю проверку. Поток сдался или кончился — ошибка на страницу, RETRY_S, и цикл открывает новый."""
         fresh = (f async for f in audio if time.monotonic() - f.userdata.get("at", time.monotonic()) < STALE_S)
-        if EARS == "openai":
+        if GATED:
             self.same = Segments(self.listen)  # новый поток — новая очередь концов речи: оборванный на старые уже не ответит
         try:
-            async for ev in Agent.default.stt_node(self, self.speech(fresh) if EARS == "openai" else fresh, model_settings):
+            async for ev in Agent.default.stt_node(self, self.speech(fresh) if GATED else fresh, model_settings):
                 ev = self.same(ev)
                 text = ev.alternatives[0].text.strip() if ev.alternatives else ""
                 if text and ev.type in (SpeechEventType.INTERIM_TRANSCRIPT, SpeechEventType.FINAL_TRANSCRIPT):
@@ -539,7 +548,7 @@ class Ending:
 
 
 class Segments:
-    """События OpenAI — в том же виде, что у Deepgram: текст без знаков и заглавных, в запись запуска — те же stt.interim и stt.final.
+    """События OpenAI и Gemini — в том же виде, что у Deepgram: текст без знаков и заглавных, в запись запуска — те же stt.interim и stt.final.
     Времени слов у OpenAI нет: кусок размечен одним «словом» от начала до конца речи по локальному детектору (точность около 0,3 с);
     конец речи приходит раньше текста куска, поэтому концы ждут свои куски в очереди (ended). На каждый конец OpenAI отвечает либо
     текстом и счётом расхода, либо одним счётом (шум, слов нет) — тогда конец из очереди уходит без куска."""
@@ -579,6 +588,89 @@ class Segments:
                 self.texted = True
                 trace("stt.final", text=alt.text, is_final=True, speech_final=True, dg_start=start, words=[[alt.text, start, end, None]])
         return ev
+
+
+class Gemini(STT):
+    """Распознавание Gemini (gemini-3.5-transcribe-live по сокету Live API, через GEMINI_PROXY): плагина LiveKit для него нет.
+    Конец куска объявляем сами, как у OpenAI: локальный детектор услышал VAD_SILENCE_S тишины — audioStreamEnd, и Gemini отдаёт
+    готовый текст (без этого он ждёт своей, долгой паузы). Черновик — целиком текст куска на этот момент, раз в полсекунды."""
+
+    model, provider = "gemini-3.5-transcribe-live", "google"
+
+    def __init__(self, http: aiohttp.ClientSession, vad) -> None:
+        super().__init__(capabilities=STTCapabilities(streaming=True, interim_results=True, offline_recognize=False))
+        self.http, self.vad = http, vad
+
+    async def _recognize_impl(self, *_, **__):
+        raise NotImplementedError
+
+    def stream(self, *, conn_options: APIConnectOptions = CONNECT, **_) -> "GeminiStream":
+        return GeminiStream(stt=self, conn_options=conn_options, sample_rate=RATE)
+
+
+class GeminiStream(RecognizeStream):
+    """Сокет открывается с первым звуком и меняется на новый, когда закрылся или состарился (GEMINI_SESSION_S) — между фразами:
+    звук в цикл идёт только во время речи. Сбой чтения — в журнал, сокет закрыт, следующая фраза откроет новый."""
+
+    async def _run(self) -> None:
+        g, me, vad = env(".config/gemini.env"), self._stt, self._stt.vad.stream()
+        ws, reader, opened, fed = None, None, 0.0, 0.0
+        said = lambda kind, text: self._event_ch.send_nowait(SpeechEvent(type=kind, alternatives=[SpeechData(language="ru", text=text)]))  # noqa: E731
+
+        async def read(sock) -> None:
+            try:
+                async for m in sock:
+                    if m.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                        continue
+                    d = json.loads(m.data)
+                    if "error" in d:
+                        raise APIError(str(d["error"])[:300])
+                    c = d.get("serverContent") or {}
+                    if text := (c.get("interimInputTranscription") or {}).get("text"):
+                        said(SpeechEventType.INTERIM_TRANSCRIPT, text)
+                    if text := (c.get("inputTranscription") or {}).get("text"):
+                        said(SpeechEventType.FINAL_TRANSCRIPT, text)
+                    if c.get("generationComplete"):  # кусок закрыт: с текстом или без (шум) — как счёт расхода у OpenAI
+                        self._event_ch.send_nowait(SpeechEvent(type=SpeechEventType.RECOGNITION_USAGE, recognition_usage=RecognitionUsage(audio_duration=0)))
+            except Exception as ex:  # noqa: BLE001
+                log("recognize.error", error=f"gemini: {type(ex).__name__}: {ex}"[:300])
+            await sock.close()
+
+        async def ends() -> None:
+            async for ev in vad:
+                if ev.type == VADEventType.START_OF_SPEECH:
+                    self._event_ch.send_nowait(SpeechEvent(type=SpeechEventType.START_OF_SPEECH))
+                elif ev.type == VADEventType.END_OF_SPEECH:
+                    self._event_ch.send_nowait(SpeechEvent(type=SpeechEventType.END_OF_SPEECH))
+                    if ws is not None and not ws.closed:
+                        await ws.send_json({"realtimeInput": {"audioStreamEnd": True}})
+
+        watching = asyncio.create_task(ends())
+        try:
+            async for frame in self._input_ch:
+                if not isinstance(frame, rtc.AudioFrame):
+                    continue
+                now = time.monotonic()
+                if ws is None or ws.closed or (now - opened > GEMINI_SESSION_S and now - fed > 1):
+                    if ws is not None:
+                        await ws.close()
+                    ws = await asyncio.wait_for(me.http.ws_connect(GEMINI_LIVE, proxy=g["GEMINI_PROXY"], headers={"x-goog-api-key": g["GEMINI_API_KEY"]}),
+                                                self._conn_options.timeout)
+                    await ws.send_json({"setup": GEMINI_STT})
+                    first = json.loads((await ws.receive(self._conn_options.timeout)).data or "{}")
+                    if "setupComplete" not in first:
+                        raise APIError(f"Gemini не принял настройки: {str(first)[:300]}")
+                    reader, opened = asyncio.create_task(read(ws)), now
+                fed = now
+                vad.push_frame(frame)
+                await ws.send_json({"realtimeInput": {"audio": {"mimeType": f"audio/pcm;rate={RATE}", "data": base64.b64encode(frame.data.tobytes()).decode()}}})
+        finally:
+            watching.cancel()
+            await vad.aclose()
+            if reader:
+                reader.cancel()
+            if ws is not None:
+                await ws.close()
 
 
 class Deepgram(deepgram.STT):

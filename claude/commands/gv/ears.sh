@@ -1,5 +1,5 @@
 #!/bin/sh
-# Чем GV распознаёт речь: deepgram | openai. Выбор — в ~/.claude/gv.ears, его читает listen.py при запуске,
+# Чем GV распознаёт речь: deepgram | openai | gemini. Выбор — в ~/.claude/gv.ears, его читает listen.py при запуске,
 # поэтому идущий сервис гасим: плагин сам поднимет его заново через несколько секунд.
 ears=$1
 echo "$ears" > "$HOME/.claude/gv.ears"
