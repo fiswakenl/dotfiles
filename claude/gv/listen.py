@@ -112,6 +112,10 @@ def plain(text: str) -> str:
     return re.sub(r"[^\w\s-]", "", text).lower()
 
 
+def sec(x: float) -> str:
+    return f"{x:.1f}".replace(".", ",") + " с"
+
+
 def env(path: str) -> dict:
     return {k: v.strip() for k, v in (l.split("=", 1) for l in (Path.home() / path).read_text().splitlines() if "=" in l and not l.startswith("#"))}
 
@@ -151,6 +155,8 @@ class Listen:
         self.audio_t0 = 0.0  # когда пошёл звук записи: от него время кусков в записи запуска
         self.order = asyncio.Lock()  # реплики решаются по одной, в порядке речи: следующая видит, куда ушла прошлая
         self.closed: float | None = None  # когда закрыта прошлая реплика
+        self.quiet_at: float | None = None  # когда детектор речи цикла последний раз сказал «речь кончилась»
+        self.tone: float | None = None  # последний ответ модели конца реплики
         self.partial = self.asked = ""  # что уже слышно в идущей фразе; по какому её началу уже спросили классификатор
         self.settled = False  # ход Claude этой фразой уже остановлен
         self.checking: asyncio.Task | None = None
@@ -254,18 +260,25 @@ class Listen:
         self.partial = self.asked = ""
         self.settled = False
         self.closed = time.monotonic()
+        # речь стихла на SPEECH_END_S раньше, чем это заметил детектор; тишина — от последнего звука речи до закрытия реплики
+        ended = self.quiet_at - SPEECH_END_S if self.quiet_at else self.closed
+        note = [f"тишина {sec(self.closed - ended)}", *([] if self.tone is None else [f"интонация {self.tone:.2f}".replace(".", ",")])]
+        self.quiet_at = self.tone = None
         emit({"me": text})
-        self.spawn(self.deliver(text, pause))
+        self.spawn(self.deliver(text, pause, ended, note))
 
-    async def deliver(self, text: str, pause: float | None) -> None:
+    async def deliver(self, text: str, pause: float | None, ended: float, note: list[str]) -> None:
+        """ended — когда стихла речь; note — пометка о скорости: её видно перед сообщением в окне Claude."""
         async with self.order:
             last, cut = self.core.last_ask(), self.core.cut
+            t0 = time.monotonic()
             continues = bool(last) and await self.ask_continues(QUESTION, said(text, last, pause, cut == last.id), "route",
                                                                  last=last.id, pause=pause and round(pause, 1), cut=cut == last.id)
             # Остановленный запрос ядро отправит заново: Claude снова занят им, как был до остановки. Остановка — на момент ответа
             # классификатора: пока он думал, ранний вопрос по следующей фразе мог её устроить.
             name = "ask" if continues or not (self.core.claude_busy() or self.core.cut) else "quick"
-            self.core.call(name, {"heard": text, "replaces": last.id if continues else 0})
+            note += [*([f"решение {sec(time.monotonic() - t0)}"] if last else []), f"всего {sec(time.monotonic() - ended)}"]
+            self.core.call(name, {"heard": text, "replaces": last.id if continues else 0, "note": " · ".join(note)})
 
     async def ask_continues(self, question: dict, situation: str, event: str, **fields) -> bool:
         """Вероятность «продолжение» от классификатора; не ответил — нет: ход Claude не трогаем, новая мысль ничего не стирает."""
@@ -311,6 +324,7 @@ class Ear(Agent):
         if (ev.old_state, ev.new_state) == ("speaking", "listening"):
             pcm = np.frombuffer(b"".join(self.listen.recent), dtype=np.int16)[-EOT_MAX_SAMPLES:]
             self.end = asyncio.ensure_future(asyncio.to_thread(self.listen.eot.predict, pcm))
+            self.listen.quiet_at = time.monotonic()
 
     async def texted(self) -> None:
         """Ждать текст на каждый конец речи, услышанный плагином OpenAI; придёт — цикл сам спросит о конце реплики заново."""
@@ -399,6 +413,7 @@ class Ending:
         # shield: цикл отменяет этот вопрос, когда приходит новый кусок текста, а ответ модели нужен и следующему вопросу;
         # нет ответа — текст есть, а речи детектор цикла не слышал: закрываем по короткой паузе
         p = float(await asyncio.shield(self.ear.end)) if self.ear.end else 1.0
+        self.ear.listen.tone = p
         log("turn.check", verdict="complete" if p >= END_SURE else "short", p=round(p, 2), s=round(time.monotonic() - t0, 2),
             wait=(QUICK_MS if p >= END_SURE else PAUSE_MS) / 1000, text=chat_ctx.items[-1].text_content)
         return p

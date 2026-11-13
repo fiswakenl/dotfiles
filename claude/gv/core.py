@@ -25,6 +25,7 @@ class Req:
     state: str = "queued"  # queued → sent → answered; superseded — заменён поправкой; failed — не дошёл
     by: int | None = None  # чем заменён
     answer: str = ""  # что ответил Claude
+    note: str = ""  # пометка слуха о скорости: плагин показывает её перед текстом, в сам текст она не входит
     at: float = field(default_factory=time.monotonic)
 
 
@@ -42,12 +43,12 @@ class Core:
     # ── слух и /call ─────────────────────────────────────────────────────────────
     def call(self, name: str, args: dict) -> str:
         """args.heard — распознанная реплика; args.replaces — какой ask она продолжает."""
-        text = str(args.get("heard") or args.get("text") or "").strip()
+        text, note = str(args.get("heard") or args.get("text") or "").strip(), str(args.get("note") or "")
         if not text:
             return "Пустой текст: ничего не передано."
         if name == "quick":
             self.resume()
-            return f"Вопрос №{self._add('quick', text).id} передан."
+            return f"Вопрос №{self._add('quick', text, note=note).id} передан."
         old = self.reqs.get(int(args.get("replaces") or 0))
         while old and old.by:  # продолжение уже заменённого — значит, его свежей замены
             old = self.reqs[old.by]
@@ -57,7 +58,7 @@ class Core:
         if old:
             text = f"{old.text} {text}"
         # Поправка ещё не отправленного запроса наследует его откат: история Claude та же, что ждала его.
-        r = self._add("ask", text, None if not old else old.rewind if old.state == "queued" else old.id)
+        r = self._add("ask", text, None if not old else old.rewind if old.state == "queued" else old.id, note)
         if old:
             self._supersede(old, r.id)
         return f"Запрос №{r.id} передан" + (f" вместо №{old.id}." if old else ".")
@@ -90,14 +91,14 @@ class Core:
     def next(self) -> dict | None:
         """Что отдать плагину: остановка хода — первой, quick и поправки — сразу, новый ask — когда Claude свободен."""
         if self.cancels:
-            return {"kind": "cancel", "id": (id := self.cancels.pop(0)), "text": self.reqs[id].text}
+            return {"kind": "cancel", "id": (id := self.cancels.pop(0)), "text": self.reqs[id].text, "note": self.reqs[id].note}
         for r in self.reqs.values():
             if r.state == "queued" and (r.kind == "quick" or r.rewind or (self.busy is None and not self.working)):
                 r.state = "sent"
                 if r.kind == "ask":
                     self.busy = r.id
                 self.emit({"sent": r.id})
-                return {"id": r.id, "kind": r.kind, "text": r.text, "rewind": r.rewind}
+                return {"id": r.id, "kind": r.kind, "text": r.text, "rewind": r.rewind, "note": r.note}
         return None
 
     def claude(self, working: bool) -> None:
@@ -140,8 +141,8 @@ class Core:
         return not self.cancels and not any(r.state in ("queued", "sent") for r in self.reqs.values())
 
     # ── внутреннее ──────────────────────────────────────────────────────────────
-    def _add(self, kind: str, text: str, rewind: int | None = None) -> Req:
-        r = Req(next(self.ids), kind, text, rewind)
+    def _add(self, kind: str, text: str, rewind: int | None = None, note: str = "") -> Req:
+        r = Req(next(self.ids), kind, text, rewind, note=note)
         self.reqs[r.id] = r
         self.log(kind, id=r.id, text=text, rewind=rewind)
         self.emit({"ask": text, "id": r.id, "kind": kind, "rewind": rewind})

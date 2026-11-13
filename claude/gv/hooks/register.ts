@@ -126,7 +126,7 @@ async function poll($, options, me: number): Promise<void> {
       continue;
     }
     if (item.kind === "cancel") { // человек заговорил, и это продолжение: ход этого запроса — стоп, остальное решит конец фразы
-      if (current === item.id) void bridge($, "cancel", { text: `${MARK} ${item.text}` }).catch((err) => $.ui.log(`gv: ход не остановлен: ${String(err)}`, { to: "debug" }));
+      if (current === item.id) void bridge($, "cancel", { text: shown(item) }).catch((err) => $.ui.log(`gv: ход не остановлен: ${String(err)}`, { to: "debug" }));
       continue;
     }
     try {
@@ -150,8 +150,11 @@ async function bridge($, name: string, args: Record<string, unknown>): Promise<a
 
 // ask: в окно Claude как набранное руками; поправка — откат до сообщения прежнего запроса и новый текст. Новое сообщение ядро
 // отдаёт, только когда Claude свободен; поправка откатывает идущий ход сама. Чей ход, узнаём по тексту на его старте (turn.start).
-async function deliver($, r: { id: number; text: string; rewind: number | null }): Promise<void> {
-  const text = `${MARK} ${r.text}`;
+// Сообщение, как оно выглядит в окне Claude: метка голоса, пометка слуха о скорости, текст.
+const shown = (r: { text: string; note?: string }): string => `${MARK} ${r.note ? `[${r.note}] ` : ""}${r.text}`;
+
+async function deliver($, r: { id: number; text: string; rewind: number | null; note?: string }): Promise<void> {
+  const text = shown(r);
   const target = r.rewind ? voiceMessages.get(r.rewind) : undefined;
   expected.set(text, r.id);
   // Сообщения, которое поправляем, в истории уже нет (откат руками) или оно из прошлого запуска сервиса — реплика уходит новой.
