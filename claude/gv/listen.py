@@ -2,7 +2,7 @@
 без сервера, комнаты и аккаунта LiveKit, без модели-собеседника и голоса; мозг — Claude Code.
 
     микрофон ──звук──▶ AgentSession ─┬─ распознавание: Deepgram (nova-3) | OpenAI ──текст──┐
-                                     ├─ детектор речи Silero, локальный                     ├─▶ реплика ──▶ решение ──▶ core.call(ask | quick)
+                                     ├─ детектор речи Silero, локальный                     ├─▶ реплика ──▶ решение ──▶ core.call(ask)
                                      └─ конец реплики: модель по звуку, локальная (Ending) ──┘
 
 Цикл сам ведёт детектор речи, поток распознавания (и открывает его заново после обрыва), копит куски текста и объявляет конец
@@ -14,7 +14,8 @@
 Текст — без знаков препинания и заглавных: у Deepgram punctuate и smart_format выключены, у OpenAI их снимает Segments.
 
 Куда реплику — классификатор OpenAI Decisions, вероятность: продолжает ли она последний переданный ask (договаривает, уточняет,
-исправляет). Да — ask с replaces=N: ядро склеит текст и откатит №N. Нет — новая мысль: пока Claude занят — quick, свободен — ask.
+исправляет). Да — ask с replaces=N: ядро склеит текст и откатит №N. Нет — новая мысль: новый ask, пока Claude занят — ждёт в ядре.
+Без модели — два правила: на реплику, на которую Claude уже ответил или над которой работает дольше GLUE_S, новая — всегда новый ask.
 Неуверенное «да» — новая мысль: ошибочная поправка стёрла бы работу Claude, лишнее сообщение — нет.
 Тот же вопрос задаётся и рано — по первым словам новой фразы, пока Claude работает над последней репликой: «да» останавливает его
 ход сразу (core.interrupt); слов мало — вопрос повторяется на каждом новом куске текста. Решает всё равно вопрос по всей фразе.
@@ -95,6 +96,7 @@ WARM = "Предыдущая реплика (ждёт отправки, пере
 WARM_AFTER_S = 5  # столько без вопросов к модели решений — и первый же ответ вдвое медленнее (0,5–0,9 с вместо 0,25): греем, как только человек заговорил
 DECISIONS_MODEL = "gpt-6-luna"  # gpt-6-luna-decisions, что плагин берёт по умолчанию, нашему ключу недоступна
 SURE = 0.7  # вероятность продолжения ниже — не поправка, а новая мысль
+GLUE_S = 20  # дольше Claude работает над репликой — её уже не дописываем и ход не останавливаем: откат стёр бы сделанное
 WRITING_WAIT_S = 0.5  # дольше окно Claude о том, что он уже написал, не ждём: решаем без этого
 STATE = {"queued": "ждёт отправки", "sent": "Claude работает над ней", "answered": "Claude ответил"}
 CUT = "Claude начал отвечать, но человек заговорил снова, и ответ остановлен"
@@ -295,6 +297,9 @@ class Listen:
             self.asked = text
             if not (last := self.core.working_on()):
                 return
+            # Claude работает давно — остановка стёрла бы сделанное; уже пишет ответ — человек, скорее всего, реагирует на него.
+            if time.monotonic() - last.at > GLUE_S or await self.writing(last):
+                return
             if await self.ask_continues(EARLY, state(text, last, pause), "route.early", last=last.id, text=text):
                 self.settled = self.core.interrupt(last.id)
 
@@ -319,10 +324,18 @@ class Listen:
         """Продолжает ли text последний ask: (каким он был в момент вопроса, ответ). Зовётся и заранее, по черновику фразы."""
         last, cut = self.core.last_ask(), self.core.cut
         if not last:
-            return None, False
+            return None, False, ""
+        was = (last.id, last.state, cut)
+        # Без модели: на отвеченную реплику новая — всегда отдельное сообщение (склейка стёрла бы готовый ответ и всё, что было после
+        # него; модель в таких случаях ошибалась и после 13 минут тишины). И на ту, над которой Claude работает дольше GLUE_S.
+        why = ("Claude ответил" if last.state == "answered" else
+               "Claude работает давно" if last.state == "sent" and cut != last.id and time.monotonic() - last.at > GLUE_S else "")
+        if why:
+            log("route.rule", why=why, last=last.id, pause=pause and round(pause, 1))
+            return was, False, "правило"
         writing = await self.writing(last)
-        return (last.id, last.state, cut), await self.ask_continues(QUESTION, said(text, last, pause, cut == last.id, writing), "route", last=last.id,
-                                                                    pause=pause and round(pause, 1), cut=cut == last.id, writing=len(writing))
+        return was, await self.ask_continues(QUESTION, said(text, last, pause, cut == last.id, writing), "route", last=last.id,
+                                             pause=pause and round(pause, 1), cut=cut == last.id, writing=len(writing)), DECIDE
 
     async def deliver(self, text: str, pause: float | None, ended: float, note: list[str]) -> None:
         """ended — когда стихла речь; note — пометка о скорости: её видно перед сообщением в окне Claude."""
@@ -331,23 +344,22 @@ class Listen:
             t0, guess, self.guess = time.monotonic(), self.guess, None
             # Решение по черновику годится, если черновик совпал с готовым текстом и прошлый ask с тех пор не изменился
             # (не ушёл Claude, не получил ответ): тогда оно уже принято или вот-вот будет, пока мы ждали готовый текст.
-            was, continues, early = None, False, False
+            was, continues, early, by = None, False, False, ""
             if guess and guess[0].split() == text.split():
                 try:
-                    was, continues = await guess[1]
+                    was, continues, by = await guess[1]
                     early = was == ((last.id, last.state, cut) if last else None)
                 except asyncio.CancelledError:
                     pass
             elif guess:
                 guess[1].cancel()
             if not early:
-                _, continues = await self.route(text, pause)
-            # Остановленный запрос ядро отправит заново: Claude снова занят им, как был до остановки. Остановка — на момент ответа
-            # классификатора: пока он думал, ранний вопрос по следующей фразе мог её устроить.
-            name = "ask" if continues or not (self.core.claude_busy() or self.core.cut) else "quick"
-            took = f"решение {'заранее' if early else sec(time.monotonic() - t0)} {DECIDE}"
+                _, continues, by = await self.route(text, pause)
+            took = f"решение {'заранее' if early else sec(time.monotonic() - t0)} {by}"
             note += [*([took] if last else []), f"всего {sec(time.monotonic() - ended)}"]
-            self.core.call(name, {"heard": text, "replaces": last.id if continues and last else 0, "note": " · ".join(note)})
+            # Не продолжение — новое сообщение: Claude занят — ядро придержит его и отдаст следом. Остановленный запрос ядро
+            # отправит заново: Claude снова занят им, как был до остановки.
+            self.core.call("ask", {"heard": text, "replaces": last.id if continues and last else 0, "note": " · ".join(note)})
 
     async def writing(self, last) -> str:
         """Что Claude уже написал в ответ на last, пока ход ещё идёт, — прямо сейчас, из окна Claude; не узнали — пусто."""
