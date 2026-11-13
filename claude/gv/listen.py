@@ -164,6 +164,8 @@ class Listen:
         self.decisions = openai.DecisionModel(model=DECISIONS_MODEL, api_key=os.environ.get("OPENAI_API_KEY") or env(".config/openai.env")["OPENAI_API_KEY"])
         self.gemini: aiohttp.ClientSession | None = None  # соединение с Gemini Decision: заводится первым вопросом
         self.decided = 0.0  # когда последний раз спрашивали модель решений
+        self.draft = self.drafted = ""  # что из идущей фразы показать в поле ввода Claude; что там уже показано
+        self.drafting: asyncio.Task | None = None
         self.eot = EOT()  # модель конца реплики по звуку: в процессе, без сети
         self.sound: Sound | None = None  # вход звука идущей сессии цикла
         self.recent: deque = deque(maxlen=int(EOT_MAX_SAMPLES / RATE / BLOCK_S))  # последние 1,2 с звука: столько слышит модель конца реплики
@@ -253,11 +255,27 @@ class Listen:
         log("recognize.error", error=why[:500])
         emit({"error": f"{EARS}: {why}"})
 
-    # ── фраза ещё звучит: ранняя проверка ───────────────────────────────────────
+    # ── фраза ещё звучит: черновик в поле ввода и ранняя проверка ───────────────
+    def show(self, text: str) -> None:
+        """Распознанное — в поле ввода Claude, пока человек говорит: видно, что уже услышано и когда реплика улетает. Пусто — убрать."""
+        self.draft = text
+        if self.bridge and (self.drafting is None or self.drafting.done()):
+            self.drafting = self.spawn(self.showing())
+
+    async def showing(self) -> None:
+        """По одному запросу за раз, каждый — со свежим текстом: черновики идут чаще, чем мост успевает отвечать."""
+        while self.draft != self.drafted:
+            self.drafted = self.draft
+            try:
+                await asyncio.wait_for(self.bridge("draft", {"text": self.drafted}), 1)
+            except Exception:  # noqa: BLE001 — мост молчит: без черновика голос работает как прежде
+                return
+
     def hearing(self, text: str, pause: float | None) -> None:
         """text — всё, что в идущей фразе уже распознано: пока Claude работает над последней репликой, по этому началу проверяем,
         не её ли это продолжение, — тогда его ход останавливается сразу. Проверка одна за раз, каждая — по свежему тексту."""
         self.partial = text
+        self.show(f"🎙 {text}")
         if not self.settled and (self.checking is None or self.checking.done()):
             self.checking = self.spawn(self.check(pause))
 
@@ -275,6 +293,7 @@ class Listen:
         if self.checking:  # опоздавшее раннее «да» остановило бы ход уже после решения по всей фразе
             self.checking.cancel()
         self.partial = self.asked = ""
+        self.show("")
         self.settled = False
         self.closed = time.monotonic()
         # речь стихла на SPEECH_END_S раньше, чем это заметил детектор; тишина — от последнего звука речи до закрытия реплики
