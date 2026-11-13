@@ -37,7 +37,7 @@ HERE = Path(__file__).resolve().parent
 PORT = int(os.environ.get("GV_PORT", 8790))
 NEXT_WAIT = 25  # дольше /next не держим
 PING_LOST = 90
-BRIDGE = {"status", "list", "send", "rewind", "cancel"}
+BRIDGE = {"status", "list", "send", "rewind", "cancel", "said"}
 BRIDGE_LIMIT = 64 << 20  # ответ моста — одна строка JSON; список сообщений длинной сессии больше 64 КБ по умолчанию
 EPOCH = uuid.uuid4().hex[:12]  # номер этого запуска: перезапуск (и execv при правке кода) даёт новый
 S = {"ping": time.monotonic()}
@@ -246,7 +246,7 @@ async def main() -> None:
     for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(sig, lambda signum, _f: (log("exit", why=f"сигнал {signal.Signals(signum).name}"), os._exit(0)))
     log("start", port=PORT, epoch=EPOCH)
-    tasks = [asyncio.create_task(c) for c in (watchdog(), claude_steps(), Listen(core).run())]  # noqa: F841 — держим ссылки
+    tasks = [asyncio.create_task(c) for c in (watchdog(), claude_steps(), Listen(core, bridge).run())]  # noqa: F841 — держим ссылки
     for t in tasks:  # упавшая задача иначе молчит: голос не работает, а в журнале пусто
         t.add_done_callback(lambda t: t.cancelled() or not t.exception() or log("task.error", error=f"{type(t.exception()).__name__}: {t.exception()}"))
     await asyncio.Event().wait()

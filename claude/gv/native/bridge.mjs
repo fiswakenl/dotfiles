@@ -1,5 +1,5 @@
 // Мост в окно Claude: Unix-сокет, строка JSON {name, args} → строка JSON с результатом.
-// Имена те же, что у /call в voice.py: status, list, send {text}, rewind {target, text?}, cancel {text}.
+// Имена те же, что у /call в voice.py: status, list, send {text}, rewind {target, text?}, cancel {text}, said {text}.
 // cancel — остановить идущий ход, как Esc; text — сообщение этого хода.
 // target — номер сообщения пользователя с начала ветки (1, 2…) или его UUID; text — сразу отправить после отката.
 import net from 'node:net';
@@ -81,6 +81,17 @@ async function rewind({target, text}) {
  } finally { busy = false; }
 }
 
+// Что Claude уже написал в ответ на голосовое сообщение с этим текстом: готовые куски из истории и то, что печатается прямо сейчас.
+// Зацепка во внутренность: turn.stream.peekStreamingText() — текст, который окно показывает, пока ответ идёт (проверено на 2.1.323).
+function said({text}) {
+ const all = rows();
+ const at = all.findLastIndex(m=>m.type==='user' && !m.isMeta && textOf(m).startsWith('🎙') && (!text || textOf(m).endsWith(text)));
+ if (at < 0) return {text:''};
+ const done = all.slice(at+1).filter(m=>m.type==='assistant').map(textOf);
+ const now = controller.turn?.stream?.peekStreamingText?.() ?? '';
+ return {text:[...done, now].filter(s=>s.trim()).join('\n').trim()};
+}
+
 async function dispatch({name, args = {}}) {
  if (!controller?.transcript) return {error:'controller_not_ready'};
  if (name === 'status') return {ready:true, pid:process.pid, sessionId:controller.session.id};
@@ -88,6 +99,7 @@ async function dispatch({name, args = {}}) {
  if (name === 'send') return send(args.text);
  if (name === 'rewind') return rewind(args);
  if (name === 'cancel') return cancel(args);
+ if (name === 'said') return said(args);
  return {error:`unknown_name: ${name}`};
 }
 

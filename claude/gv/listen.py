@@ -87,6 +87,7 @@ ALWAYS = SessionConnectOptions(stt_conn_options=CONNECT, max_unrecoverable_error
 ROUTE_WAIT = APIConnectOptions(max_retry=0, timeout=5)  # не ответил — новая мысль
 DECISIONS_MODEL = "gpt-6-luna"  # gpt-6-luna-decisions, что плагин берёт по умолчанию, нашему ключу недоступна
 SURE = 0.7  # вероятность продолжения ниже — не поправка, а новая мысль
+WRITING_WAIT_S = 0.5  # дольше окно Claude о том, что он уже написал, не ждём: решаем без этого
 STATE = {"queued": "ждёт отправки", "sent": "Claude работает над ней", "answered": "Claude ответил"}
 CUT = "Claude начал отвечать, но человек заговорил снова, и ответ остановлен"
 QUESTION = {"continues": Probability(
@@ -127,11 +128,16 @@ def words(sec: float) -> str:
             f"{sec} с — долгая, человек замолчал и потом заговорил снова")
 
 
-def said(text: str, last, pause: float | None, cut: bool) -> str:
-    """Что видит «продолжение?» по всей фразе: прошлый ask с его состоянием и ответом Claude на него (если уже ответил), пауза перед
-    новой репликой (None — неизвестна, тега нет) и сама реплика — тегами. По ответу видно, договаривает человек своё или отвечает Claude."""
-    answer = last.answer if len(last.answer) <= 2 * ANSWER_CHARS else f"{last.answer[:ANSWER_CHARS]} … {last.answer[-ANSWER_CHARS:]}"
-    d = {"до_паузы": last.text, "состояние": CUT if cut else STATE[last.state], **({"ответ_claude": answer} if answer else {}),
+def brief(text: str) -> str:
+    return text if len(text) <= 2 * ANSWER_CHARS else f"{text[:ANSWER_CHARS]} … {text[-ANSWER_CHARS:]}"
+
+
+def said(text: str, last, pause: float | None, cut: bool, writing: str = "") -> str:
+    """Что видит «продолжение?» по всей фразе: прошлый ask с его состоянием и ответом Claude на него (если уже ответил; ещё пишет —
+    writing, то, что человеку уже видно), пауза перед новой репликой (None — неизвестна, тега нет) и сама реплика — тегами.
+    По ответу видно, договаривает человек своё или отвечает Claude."""
+    d = {"до_паузы": last.text, "состояние": CUT if cut else STATE[last.state],
+         **({"ответ_claude": brief(last.answer)} if last.answer else {"claude_пишет": brief(writing)} if writing else {}),
          **({} if pause is None else {"пауза": words(round(pause, 1))}), "после_паузы": text}
     return "\n".join(f"<{k}>{v}</{k}>" for k, v in d.items())
 
@@ -144,8 +150,9 @@ def state(text: str, last, pause: float | None) -> str:
 
 
 class Listen:
-    def __init__(self, core) -> None:
+    def __init__(self, core, bridge=None) -> None:
         self.core = core
+        self.bridge = bridge  # мост в окно Claude: у него спрашиваем, что Claude уже написал
         self.mic = Mic(self)
         self.decisions = openai.DecisionModel(model=DECISIONS_MODEL, api_key=os.environ.get("OPENAI_API_KEY") or env(".config/openai.env")["OPENAI_API_KEY"])
         self.eot = EOT()  # модель конца реплики по звуку: в процессе, без сети
@@ -272,13 +279,23 @@ class Listen:
         async with self.order:
             last, cut = self.core.last_ask(), self.core.cut
             t0 = time.monotonic()
-            continues = bool(last) and await self.ask_continues(QUESTION, said(text, last, pause, cut == last.id), "route",
-                                                                 last=last.id, pause=pause and round(pause, 1), cut=cut == last.id)
+            writing = await self.writing(last) if last else ""
+            continues = bool(last) and await self.ask_continues(QUESTION, said(text, last, pause, cut == last.id, writing), "route", last=last.id,
+                                                                 pause=pause and round(pause, 1), cut=cut == last.id, writing=len(writing))
             # Остановленный запрос ядро отправит заново: Claude снова занят им, как был до остановки. Остановка — на момент ответа
             # классификатора: пока он думал, ранний вопрос по следующей фразе мог её устроить.
             name = "ask" if continues or not (self.core.claude_busy() or self.core.cut) else "quick"
             note += [*([f"решение {sec(time.monotonic() - t0)}"] if last else []), f"всего {sec(time.monotonic() - ended)}"]
             self.core.call(name, {"heard": text, "replaces": last.id if continues else 0, "note": " · ".join(note)})
+
+    async def writing(self, last) -> str:
+        """Что Claude уже написал в ответ на last, пока ход ещё идёт, — прямо сейчас, из окна Claude; не узнали — пусто."""
+        if not self.bridge or last.state != "sent" or last.answer:
+            return ""
+        try:
+            return str((await asyncio.wait_for(self.bridge("said", {"text": last.text}), WRITING_WAIT_S)).get("text") or "")
+        except Exception:  # noqa: BLE001 — мост молчит: решаем, как раньше, без написанного
+            return ""
 
     async def ask_continues(self, question: dict, situation: str, event: str, **fields) -> bool:
         """Вероятность «продолжение» от классификатора; не ответил — нет: ход Claude не трогаем, новая мысль ничего не стирает."""
@@ -288,7 +305,7 @@ class Listen:
             if "continues" not in r.results:
                 raise APIError(r.errors.get("continues", "нет ответа"))
             p = r.results["continues"].value
-            log(event, p=round(p, 2), s=round(time.monotonic() - t0, 2), **fields)
+            log(event, p=round(p, 2), s=round(time.monotonic() - t0, 2), **fields, input=situation)  # вход — чтобы спорное решение можно было повторить
             return p >= SURE
         except Exception as ex:  # noqa: BLE001
             log("route.error", error=f"{type(ex).__name__}: {ex}")
