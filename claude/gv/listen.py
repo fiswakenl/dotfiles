@@ -89,6 +89,8 @@ DECIDE_FILE = Path.home() / ".claude" / "gv.decide"
 DECIDE = os.environ.get("GV_DECIDE") or (DECIDE_FILE.read_text().strip() if DECIDE_FILE.exists() else "") or "openai"  # чем решать: openai | gemini
 GEMINI_DECISIONS = "https://generativelanguage.googleapis.com/v1beta/decisions"
 GEMINI_MODEL = "gemini-decision-1"
+# вопрос для прогрева — как настоящий: на пустое «привет» модель OpenAI отвечать отказывается
+WARM = "Предыдущая реплика (ждёт отправки, передана 1.0 с назад): расскажи про регуляризацию\nПауза в речи перед новой репликой: 0.5 с\nНачало новой реплики: и какие у неё"
 WARM_AFTER_S = 5  # столько без вопросов к модели решений — и первый же ответ вдвое медленнее (0,5–0,9 с вместо 0,25): греем, как только человек заговорил
 DECISIONS_MODEL = "gpt-6-luna"  # gpt-6-luna-decisions, что плагин берёт по умолчанию, нашему ключу недоступна
 SURE = 0.7  # вероятность продолжения ниже — не поправка, а новая мысль
@@ -241,7 +243,7 @@ class Listen:
         while True:
             try:
                 t0 = time.monotonic()
-                await self.probability(EARLY, "привет")
+                await self.probability(EARLY, WARM)
                 log("turn.warm", s=round(time.monotonic() - t0, 2), model=DECIDE)
             except Exception as ex:  # noqa: BLE001 — не прогрелось: первый вопрос просто подождёт
                 log("turn.warm.error", error=f"{type(ex).__name__}: {ex}")
@@ -327,7 +329,7 @@ class Listen:
     async def warm(self) -> None:
         """Человек заговорил, а модель решений давно не спрашивали: пустой вопрос сейчас — и к концу фразы она ответит быстро."""
         try:
-            await self.probability(EARLY, "привет")
+            await self.probability(EARLY, WARM)
         except Exception:  # noqa: BLE001 — не прогрелось: настоящий вопрос просто подождёт
             pass
 
