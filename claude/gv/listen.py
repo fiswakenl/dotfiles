@@ -56,6 +56,7 @@ from livekit.agents.voice import io
 from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.local_inference import EOT, EOT_MAX_SAMPLES
 from livekit.plugins import deepgram, openai
+from livekit.plugins.openai import stt as openai_stt
 
 from journal import emit, log, trace, trace_open
 
@@ -112,6 +113,10 @@ EARLY = {"continues": Probability(
     "Учитывай паузу перед новой репликой: меньше секунды — человек договаривает фразу; несколько секунд и больше — он уже "
     "закончил и начинает новую мысль, если начало само по себе звучит как новая мысль.")}
 
+# Зацепка во внутренность плагина OpenAI: черновик он отдаёт не чаще раза в 0,5 с, и последние слова фразы приходят только с готовым
+# текстом, на 0,3–0,4 с позже. Нам черновик нужен целиком и сразу: по нему решение «продолжение?» принимается заранее.
+openai_stt._delta_transcript_interval = 0
+
 logging.basicConfig(level=logging.WARNING)  # в ~/.claude/gv.out — только сбои библиотек
 
 
@@ -164,6 +169,8 @@ class Listen:
         self.decisions = openai.DecisionModel(model=DECISIONS_MODEL, api_key=os.environ.get("OPENAI_API_KEY") or env(".config/openai.env")["OPENAI_API_KEY"])
         self.gemini: aiohttp.ClientSession | None = None  # соединение с Gemini Decision: заводится первым вопросом
         self.decided = 0.0  # когда последний раз спрашивали модель решений
+        self.stilled = False  # речь стихла, а реплика ещё не закрыта: текст дошёптывается, решение можно принять заранее
+        self.guess: tuple[str, asyncio.Task] | None = None  # решение «продолжение?» по черновику фразы: её текст и задача
         self.draft = self.drafted = ""  # что из идущей фразы показать в поле ввода Claude; что там уже показано
         self.drafting: asyncio.Task | None = None
         self.eot = EOT()  # модель конца реплики по звуку: в процессе, без сети
@@ -276,6 +283,10 @@ class Listen:
         не её ли это продолжение, — тогда его ход останавливается сразу. Проверка одна за раз, каждая — по свежему тексту."""
         self.partial = text
         self.show(f"🎙 {text}")
+        if self.stilled and not (self.guess and self.guess[0] == text):
+            if self.guess:
+                self.guess[1].cancel()
+            self.guess = (text, self.spawn(self.route(text, pause)))
         if not self.settled and (self.checking is None or self.checking.done()):
             self.checking = self.spawn(self.check(pause))
 
@@ -293,6 +304,7 @@ class Listen:
         if self.checking:  # опоздавшее раннее «да» остановило бы ход уже после решения по всей фразе
             self.checking.cancel()
         self.partial = self.asked = ""
+        self.stilled = False
         self.show("")
         self.settled = False
         self.closed = time.monotonic()
@@ -303,19 +315,39 @@ class Listen:
         emit({"me": text})
         self.spawn(self.deliver(text, pause, ended, note))
 
+    async def route(self, text: str, pause: float | None) -> tuple:
+        """Продолжает ли text последний ask: (каким он был в момент вопроса, ответ). Зовётся и заранее, по черновику фразы."""
+        last, cut = self.core.last_ask(), self.core.cut
+        if not last:
+            return None, False
+        writing = await self.writing(last)
+        return (last.id, last.state, cut), await self.ask_continues(QUESTION, said(text, last, pause, cut == last.id, writing), "route", last=last.id,
+                                                                    pause=pause and round(pause, 1), cut=cut == last.id, writing=len(writing))
+
     async def deliver(self, text: str, pause: float | None, ended: float, note: list[str]) -> None:
         """ended — когда стихла речь; note — пометка о скорости: её видно перед сообщением в окне Claude."""
         async with self.order:
             last, cut = self.core.last_ask(), self.core.cut
-            t0 = time.monotonic()
-            writing = await self.writing(last) if last else ""
-            continues = bool(last) and await self.ask_continues(QUESTION, said(text, last, pause, cut == last.id, writing), "route", last=last.id,
-                                                                 pause=pause and round(pause, 1), cut=cut == last.id, writing=len(writing))
+            t0, guess, self.guess = time.monotonic(), self.guess, None
+            # Решение по черновику годится, если черновик совпал с готовым текстом и прошлый ask с тех пор не изменился
+            # (не ушёл Claude, не получил ответ): тогда оно уже принято или вот-вот будет, пока мы ждали готовый текст.
+            was, continues, early = None, False, False
+            if guess and guess[0].split() == text.split():
+                try:
+                    was, continues = await guess[1]
+                    early = was == ((last.id, last.state, cut) if last else None)
+                except asyncio.CancelledError:
+                    pass
+            elif guess:
+                guess[1].cancel()
+            if not early:
+                _, continues = await self.route(text, pause)
             # Остановленный запрос ядро отправит заново: Claude снова занят им, как был до остановки. Остановка — на момент ответа
             # классификатора: пока он думал, ранний вопрос по следующей фразе мог её устроить.
             name = "ask" if continues or not (self.core.claude_busy() or self.core.cut) else "quick"
-            note += [*([f"решение {sec(time.monotonic() - t0)} {DECIDE}"] if last else []), f"всего {sec(time.monotonic() - ended)}"]
-            self.core.call(name, {"heard": text, "replaces": last.id if continues else 0, "note": " · ".join(note)})
+            took = f"решение {'заранее' if early else sec(time.monotonic() - t0)} {DECIDE}"
+            note += [*([took] if last else []), f"всего {sec(time.monotonic() - ended)}"]
+            self.core.call(name, {"heard": text, "replaces": last.id if continues and last else 0, "note": " · ".join(note)})
 
     async def writing(self, last) -> str:
         """Что Claude уже написал в ответ на last, пока ход ещё идёт, — прямо сейчас, из окна Claude; не узнали — пусто."""
@@ -390,17 +422,21 @@ class Ear(Agent):
 
     def quiet(self, ev) -> None:
         """Детектор речи цикла сказал «речь кончилась»: последние 1,2 с звука — модели конца реплики, пока в них только что стихшая речь."""
-        if ev.new_state == "speaking" and time.monotonic() - self.listen.decided > WARM_AFTER_S:
-            self.listen.spawn(self.listen.warm())
+        if ev.new_state == "speaking":
+            self.listen.stilled = False
+            if time.monotonic() - self.listen.decided > WARM_AFTER_S:
+                self.listen.spawn(self.listen.warm())
         if (ev.old_state, ev.new_state) == ("speaking", "listening"):
             pcm = np.frombuffer(b"".join(self.listen.recent), dtype=np.int16)[-EOT_MAX_SAMPLES:]
             self.end = asyncio.ensure_future(asyncio.to_thread(self.listen.eot.predict, pcm))
-            self.listen.quiet_at = time.monotonic()
+            self.listen.quiet_at, self.listen.stilled = time.monotonic(), True
+            if self.listen.partial:  # всё слышное уже могло прийти до этого момента: решение — по тому, что есть
+                self.listen.hearing(self.listen.partial, self.pause)
 
     async def texted(self) -> None:
         """Ждать текст на каждый конец речи, услышанный плагином OpenAI; придёт — цикл сам спросит о конце реплики заново."""
         t0 = time.monotonic()
-        while isinstance(self.same, Segments) and self.same.ended and time.monotonic() - t0 < TEXT_WAIT_S:
+        while isinstance(self.same, Segments) and self.same.waiting() and time.monotonic() - t0 < TEXT_WAIT_S:
             await asyncio.sleep(BLOCK_S)
 
     async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
@@ -502,12 +538,19 @@ class Segments:
         self.ended: deque = deque()
         self.texted = False  # у текущего ответа OpenAI был текст
 
+    def waiting(self) -> bool:
+        """Есть конец речи, на который текст ещё может прийти. Конец старше TEXT_WAIT_S уже не дождётся (OpenAI промолчал: ни текста,
+        ни счёта) — без этого он застревал в очереди, и каждая следующая реплика ждала свой текст лишние TEXT_WAIT_S."""
+        while self.ended and time.monotonic() - self.ended[0][2] > TEXT_WAIT_S:
+            self.ended.popleft()
+        return bool(self.ended)
+
     def __call__(self, ev):
         at = round(time.time() - self.listen.audio_t0, 2)
         if ev.type == SpeechEventType.START_OF_SPEECH:
             self.start = at
         elif ev.type == SpeechEventType.END_OF_SPEECH:
-            self.ended.append((self.start, round(at - VAD_SILENCE_S, 2)))
+            self.ended.append((self.start, round(at - VAD_SILENCE_S, 2), time.monotonic()))
         elif ev.type == SpeechEventType.RECOGNITION_USAGE:
             if not self.texted and self.ended:
                 self.ended.popleft()
@@ -520,7 +563,7 @@ class Segments:
             elif ev.type == SpeechEventType.INTERIM_TRANSCRIPT:
                 trace("stt.interim", text=alt.text, is_final=False, speech_final=False, dg_start=self.start)
             else:
-                start, end = self.ended.popleft() if self.ended else (self.start, at)
+                start, end, _ = self.ended.popleft() if self.ended else (self.start, at, 0)
                 self.texted = True
                 trace("stt.final", text=alt.text, is_final=True, speech_final=True, dg_start=start, words=[[alt.text, start, end, None]])
         return ev
