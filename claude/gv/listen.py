@@ -85,6 +85,11 @@ STALE_S = 1  # звук старше этого в распознавание н
 CONNECT = APIConnectOptions(max_retry=0, timeout=10)  # повторы — наш узел: новый поток не тащит звук, накопленный без связи
 ALWAYS = SessionConnectOptions(stt_conn_options=CONNECT, max_unrecoverable_errors=10**9)  # по умолчанию цикл закрывает сессию после трёх обрывов подряд, а нам слушать вечно
 ROUTE_WAIT = APIConnectOptions(max_retry=0, timeout=5)  # не ответил — новая мысль
+DECIDE_FILE = Path.home() / ".claude" / "gv.decide"
+DECIDE = os.environ.get("GV_DECIDE") or (DECIDE_FILE.read_text().strip() if DECIDE_FILE.exists() else "") or "openai"  # чем решать: openai | gemini
+GEMINI_DECISIONS = "https://generativelanguage.googleapis.com/v1beta/decisions"
+GEMINI_MODEL = "gemini-decision-1"
+WARM_AFTER_S = 5  # столько без вопросов к модели решений — и первый же ответ вдвое медленнее (0,5–0,9 с вместо 0,25): греем, как только человек заговорил
 DECISIONS_MODEL = "gpt-6-luna"  # gpt-6-luna-decisions, что плагин берёт по умолчанию, нашему ключу недоступна
 SURE = 0.7  # вероятность продолжения ниже — не поправка, а новая мысль
 WRITING_WAIT_S = 0.5  # дольше окно Claude о том, что он уже написал, не ждём: решаем без этого
@@ -155,6 +160,8 @@ class Listen:
         self.bridge = bridge  # мост в окно Claude: у него спрашиваем, что Claude уже написал
         self.mic = Mic(self)
         self.decisions = openai.DecisionModel(model=DECISIONS_MODEL, api_key=os.environ.get("OPENAI_API_KEY") or env(".config/openai.env")["OPENAI_API_KEY"])
+        self.gemini: aiohttp.ClientSession | None = None  # соединение с Gemini Decision: заводится первым вопросом
+        self.decided = 0.0  # когда последний раз спрашивали модель решений
         self.eot = EOT()  # модель конца реплики по звуку: в процессе, без сети
         self.sound: Sound | None = None  # вход звука идущей сессии цикла
         self.recent: deque = deque(maxlen=int(EOT_MAX_SAMPLES / RATE / BLOCK_S))  # последние 1,2 с звука: столько слышит модель конца реплики
@@ -228,13 +235,14 @@ class Listen:
         return task
 
     async def keep_warm(self) -> None:
-        """Соединение с классификатором держим тёплым: простаивающее закрывается через 240 с, и первый вопрос после перерыва
-        ждал бы рукопожатия — 1,5–3 с. Поэтому пустой вопрос сразу при запуске (иначе холодным выйдет первый настоящий) и раз в 200 с."""
+        """Соединение с классификатором держим открытым: простаивающее закрывается через 240 с, и первый вопрос после перерыва
+        ждал бы рукопожатия — 1,5–3 с. Поэтому пустой вопрос сразу при запуске (иначе холодным выйдет первый настоящий) и раз в 200 с.
+        Быстрым ответ это не делает — для этого warm."""
         while True:
             try:
                 t0 = time.monotonic()
-                await self.decisions.evaluate(input="привет", decisions=EARLY, conn_options=APIConnectOptions(max_retry=0))
-                log("turn.warm", s=round(time.monotonic() - t0, 2))
+                await self.probability(EARLY, "привет")
+                log("turn.warm", s=round(time.monotonic() - t0, 2), model=DECIDE)
             except Exception as ex:  # noqa: BLE001 — не прогрелось: первый вопрос просто подождёт
                 log("turn.warm.error", error=f"{type(ex).__name__}: {ex}")
             await asyncio.sleep(200)
@@ -285,7 +293,7 @@ class Listen:
             # Остановленный запрос ядро отправит заново: Claude снова занят им, как был до остановки. Остановка — на момент ответа
             # классификатора: пока он думал, ранний вопрос по следующей фразе мог её устроить.
             name = "ask" if continues or not (self.core.claude_busy() or self.core.cut) else "quick"
-            note += [*([f"решение {sec(time.monotonic() - t0)}"] if last else []), f"всего {sec(time.monotonic() - ended)}"]
+            note += [*([f"решение {sec(time.monotonic() - t0)} {DECIDE}"] if last else []), f"всего {sec(time.monotonic() - ended)}"]
             self.core.call(name, {"heard": text, "replaces": last.id if continues else 0, "note": " · ".join(note)})
 
     async def writing(self, last) -> str:
@@ -297,15 +305,38 @@ class Listen:
         except Exception:  # noqa: BLE001 — мост молчит: решаем, как раньше, без написанного
             return ""
 
+    async def probability(self, question: dict, situation: str) -> float:
+        """Вероятность «да» на вопрос question по входу situation — от модели решений по выбору DECIDE."""
+        self.decided = time.monotonic()
+        if DECIDE == "gemini":
+            if self.gemini is None:
+                g = env(".config/gemini.env")  # Gemini — только через свой прокси
+                self.gemini = aiohttp.ClientSession(proxy=g["GEMINI_PROXY"], headers={"x-goog-api-key": g["GEMINI_API_KEY"]},
+                                                    timeout=aiohttp.ClientTimeout(total=ROUTE_WAIT.timeout))
+            ask = {"model": GEMINI_MODEL, "input": situation, "questions": {"continues": {"type": "noul", "instructions": question["continues"].prompt}}}
+            async with self.gemini.post(GEMINI_DECISIONS, json=ask) as r:
+                body = await r.json()
+            if "answers" not in body:
+                raise APIError(str(body.get("error", body))[:300])
+            return body["answers"]["continues"]["noul"]
+        r = await self.decisions.evaluate(input=situation, decisions=question, conn_options=ROUTE_WAIT)
+        if "continues" not in r.results:
+            raise APIError(r.errors.get("continues", "нет ответа"))
+        return r.results["continues"].value
+
+    async def warm(self) -> None:
+        """Человек заговорил, а модель решений давно не спрашивали: пустой вопрос сейчас — и к концу фразы она ответит быстро."""
+        try:
+            await self.probability(EARLY, "привет")
+        except Exception:  # noqa: BLE001 — не прогрелось: настоящий вопрос просто подождёт
+            pass
+
     async def ask_continues(self, question: dict, situation: str, event: str, **fields) -> bool:
         """Вероятность «продолжение» от классификатора; не ответил — нет: ход Claude не трогаем, новая мысль ничего не стирает."""
         try:
             t0 = time.monotonic()
-            r = await self.decisions.evaluate(input=situation, decisions=question, conn_options=ROUTE_WAIT)
-            if "continues" not in r.results:
-                raise APIError(r.errors.get("continues", "нет ответа"))
-            p = r.results["continues"].value
-            log(event, p=round(p, 2), s=round(time.monotonic() - t0, 2), **fields, input=situation)  # вход — чтобы спорное решение можно было повторить
+            p = await self.probability(question, situation)
+            log(event, p=round(p, 2), s=round(time.monotonic() - t0, 2), model=DECIDE, **fields, input=situation)  # вход — чтобы спорное решение можно было повторить
             return p >= SURE
         except Exception as ex:  # noqa: BLE001
             log("route.error", error=f"{type(ex).__name__}: {ex}")
@@ -338,6 +369,8 @@ class Ear(Agent):
 
     def quiet(self, ev) -> None:
         """Детектор речи цикла сказал «речь кончилась»: последние 1,2 с звука — модели конца реплики, пока в них только что стихшая речь."""
+        if ev.new_state == "speaking" and time.monotonic() - self.listen.decided > WARM_AFTER_S:
+            self.listen.spawn(self.listen.warm())
         if (ev.old_state, ev.new_state) == ("speaking", "listening"):
             pcm = np.frombuffer(b"".join(self.listen.recent), dtype=np.int16)[-EOT_MAX_SAMPLES:]
             self.end = asyncio.ensure_future(asyncio.to_thread(self.listen.eot.predict, pcm))
