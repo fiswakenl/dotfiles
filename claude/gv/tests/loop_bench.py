@@ -2,38 +2,32 @@
 # requires-python = ">=3.10"
 # dependencies = ["aiohttp", "sounddevice", "numpy", "livekit-agents>=1.8.11,<2", "livekit-plugins-deepgram>=1.8.11,<2", "livekit-plugins-openai>=1.8.11,<2"]
 # ///
-"""Сравнение: нынешний слух (listen.Turns как есть) против готового цикла LiveKit Agents (AgentSession) на одних и тех же паузах.
-
-Три шага, каждый — своя команда:
+"""Замер слуха: настоящий listen.py на записях диктовки — сколько концов сообщения закрыто и как быстро, сколько раз фраза
+закрыта зря посреди мысли, сколько сообщений ушло в ядро. По этому замеру подобраны END_SURE, QUICK_MS и PAUSE_MS.
 
     record   записи идут в распознавание один раз (Deepgram напрямую; OpenAI через прокси и с отсечкой тишины), события с временем
              по звуку ложатся в ~/.claude/gv-keep/loop_bench_events.json. Платно, повторно не шлёт то, что уже записано.
-    run      те же события проигрываются в реальном времени в обе системы: в Turns — как из потока, в цикл LiveKit — через узел
-             stt_node рядом со звуком записи (детектор речи и модель конца цикла слушают настоящий звук). Распознавание не
-             платится; платится только классификатор (TURN). Настройка цикла — строкой: "имя det=mini thr=0.4 min=0.8 max=2.5".
-    report   правда из поведения человека (после паузы молчал PAUSE_TRUE_S и дольше — договорил), три числа на систему и
-             распознавание, склейка нашим вопросом QUESTION одинаково для всех → ~/.claude/gv-keep/loop_bench.json.
-
-det — чем цикл решает конец реплики:
-    mini     локальная модель по звуку из пакета (turn-detector-v1-mini), порог thr
-    audio    та же модель, но вызванная нами в момент «речь кончилась» распознавания (для OpenAI: ждёт запоздавший текст, hold=1)
-    text     наш вопрос TURN: complete → min, иначе max; patience=1 — ждать как listen.patience (наша логика в гнезде цикла)
-    vad      только тишина min секунд
+    run      listen.Listen целиком на каждом отрезке с обоими распознаваниями: звук записи в реальном времени, вместо сети
+             распознавания — записанные события в их моменты, ядро настоящее, вместо плагина и Claude — заглушка.
+             Платится только классификатор. Имя прогона — аргументом (по умолчанию listen.py).
+    report   правда из поведения человека (после паузы молчал PAUSE_TRUE_S и дольше — договорил) и таблица по всем прогонам из
+             ~/.claude/gv-keep/loop_bench.json; в нём же прогоны прежнего слуха (turns) и вариантов цикла (lk-*), по которым решали.
+    live     один отрезок через настоящее распознавание (GV_EARS), запись запуска — во временную папку: что услышано, что ушло
+             в ядро, сколько звука ушло в OpenAI. --silence N — N секунд тишины перед отрезком. Платно.
 
     uv run --script tests/loop_bench.py record
-    uv run --script tests/loop_bench.py run "turns" "lk-mini det=mini thr=0.4 min=0.8 max=2.5"
-    uv run --script tests/loop_bench.py report"""
+    uv run --script tests/loop_bench.py run && uv run --script tests/loop_bench.py report
+    GV_EARS=openai uv run --script tests/loop_bench.py live минута --silence 150"""
 import asyncio
 import contextvars
 import json
-import logging
 import os
 import sys
 import time
 import wave
 from collections import deque
 from pathlib import Path
-from types import SimpleNamespace
+import tempfile
 
 import aiohttp
 import numpy as np
@@ -42,13 +36,13 @@ HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 os.environ.setdefault("HTTPS_PROXY", json.load(open(Path.home() / ".claude/settings.json"))["env"]["HTTPS_PROXY"])
 import listen  # noqa: E402
+from core import Core  # noqa: E402
 from livekit import rtc  # noqa: E402
-from livekit.agents import Agent, AgentSession, StopResponse, inference, stt as lkstt  # noqa: E402
+from livekit.agents import inference, stt as lkstt  # noqa: E402
 from livekit.agents.language import LanguageCode  # noqa: E402
 from livekit.agents.stt import SpeechEventType as T  # noqa: E402
 from livekit.agents.vad import VADEventType  # noqa: E402
-from livekit.agents.voice import io  # noqa: E402
-from livekit.local_inference import EOT, EOT_MAX_SAMPLES, VAD, VAD_WINDOW_SAMPLES  # noqa: E402
+from livekit.local_inference import VAD, VAD_WINDOW_SAMPLES  # noqa: E402
 from livekit.plugins import openai  # noqa: E402
 
 KEEP = Path.home() / ".claude/gv-keep"
@@ -64,9 +58,9 @@ HOLDOUT = {"хвост-1", "хвост-2", "ночь-1", "ночь-2"}
 STTS = ("deepgram", "openai")
 PAUSE_TRUE_S = 3.0
 MIN_SPEECH_S = 0.25  # короче — не речь, а щелчок: иначе шум после фразы сдвигает её конец
-TAIL_S = 6  # тишина после отрезка: последняя реплика успевает закрыться (LONG_MS — 4 с)
+TAIL_S = 6  # тишина после отрезка: последняя реплика успевает закрыться
+CLAUDE_S = 8  # столько заглушка Claude «отвечает» на запрос
 RUN: contextvars.ContextVar = contextvars.ContextVar("run", default=None)
-DEC = None  # классификатор, один на все прогоны
 
 
 def load(name: str) -> bytes:
@@ -188,226 +182,130 @@ async def cmd_record() -> None:
         await asyncio.gather(chain(direct, "deepgram", [names]), chain(proxied, "openai", [names[i:i + 2] for i in range(0, len(names), 2)]))  # через прокси — по два
 
 
-# ── run: события → система ──────────────────────────────────────────────────────
-def speech_event(e: dict, clean: bool):
-    if e["type"] in ("INTERIM_TRANSCRIPT", "FINAL_TRANSCRIPT"):
-        text = listen.plain(e["text"]) if clean else e["text"]  # OpenAI ставит знаки и заглавные: в listen.py их снимает Segments
-        return lkstt.SpeechEvent(type=T[e["type"]], alternatives=[lkstt.SpeechData(language=LanguageCode("ru"), text=text,
-                                 start_time=e["start"], end_time=e["end"], confidence=e["conf"])])
-    return lkstt.SpeechEvent(type=T[e["type"]])
+# ── run и live: настоящий listen.py ─────────────────────────────────────────────
+class NoMic:
+    """Вместо микрофона: поток не открывается, звук даёт прогон."""
+
+    def __init__(self, *_, **__) -> None: ...
+
+    def start(self) -> None: ...
 
 
-def turn_events(events: list[dict]) -> list[dict]:
-    return [e for e in events if e["type"] in ("START_OF_SPEECH", "END_OF_SPEECH", "INTERIM_TRANSCRIPT", "FINAL_TRANSCRIPT", "RECOGNITION_USAGE")]
-
-
-async def run_turns(run: dict, events: list[dict], total: float, clean: bool) -> None:
-    """Нынешний слух: listen.Turns как есть, события приходят в те же моменты, что из потока."""
-    RUN.set(run)
-    t0 = run["t0"] = time.monotonic()
-    ear = SimpleNamespace(decisions=DEC, hearing=lambda *_: None,
-                          heard=lambda text, pause: run["closes"].append({"t": round(time.monotonic() - t0, 2), "text": text}))
-    turns = listen.Turns(ear)
-    for e in turn_events(events):
-        await asyncio.sleep(max(0, t0 + e["t"] - time.monotonic()))
-        if e["type"] != "RECOGNITION_USAGE":
-            turns.on(speech_event(e, clean))
-    await asyncio.sleep(max(0, t0 + total + TAIL_S - time.monotonic()))
-
-
-class Player(io.AudioInput):
-    """Источник звука цикла вместо комнаты: отрезок записи в реальном времени."""
-
-    def __init__(self, pcm: bytes, run: dict) -> None:
-        super().__init__(label="запись")
-        self.frames, self.n, self.run = list(frames(pcm)), 0, run
-
-    async def __anext__(self) -> rtc.AudioFrame:
-        if self.n >= len(self.frames):
-            raise StopAsyncIteration
-        if not self.n:
-            self.run["t0"] = time.monotonic()
-        await asyncio.sleep(max(0, self.run["t0"] + self.n * listen.BLOCK_S - time.monotonic()))
-        b = self.frames[self.n]
-        self.n += 1
-        return rtc.AudioFrame(b, listen.RATE, 1, len(b) // 2)
+def note(kind: str, **data) -> None:
+    """Журнал слуха и ядра — в прогон, а не в ~/.claude/gv.log живого сервиса."""
+    if run := RUN.get():
+        run["log"].append({"t": round(time.monotonic() - run.get("t0", time.monotonic()), 2), "kind": kind, **data})
 
 
 class Replayed(lkstt.STT):
-    """Распознавание-заглушка: цикл требует объект, а события даёт узел stt_node из записанных."""
+    """Распознавание без сети: поток отдаёт записанные события в их моменты по звуку прогона."""
 
-    def __init__(self) -> None:
+    def __init__(self, events: list[dict], run: dict) -> None:
         super().__init__(capabilities=lkstt.STTCapabilities(streaming=True, interim_results=True))
+        self.events, self.run = [e for e in events if e["type"] != "SENT"], run
 
     async def _recognize_impl(self, *_, **__):
         raise NotImplementedError
 
+    def stream(self, *, conn_options=listen.CONNECT, **_) -> "Replay":
+        return Replay(stt=self, conn_options=conn_options)
 
-class Ear(Agent):
-    """Агент без модели и голоса. Узел распознавания отдаёт записанные события в их моменты по звуку."""
 
-    def __init__(self, run: dict, events: list[dict], clean: bool, cfg: dict) -> None:
-        super().__init__(instructions="")
-        self.run, self.events, self.clean, self.cfg = run, turn_events(events), clean, cfg
-        self.pending = 0  # сколько «речь кончилась» распознавания ещё без своего текста (OpenAI отдаёт текст позже)
-        self.audio_p: asyncio.Future | None = None
-        self.eot = EOT() if cfg["det"] == "audio" else None
+class Replay(lkstt.RecognizeStream):
+    async def _run(self) -> None:
+        async def drain() -> None:
+            async for _ in self._input_ch:
+                pass
+        draining = asyncio.create_task(drain())
+        while "t0" not in self._stt.run:
+            await asyncio.sleep(0.01)
+        for e in self._stt.events:
+            await asyncio.sleep(max(0, self._stt.run["t0"] + e["t"] - time.monotonic()))
+            alt = [lkstt.SpeechData(language=LanguageCode("ru"), text=e["text"], start_time=e["start"], end_time=e["end"], confidence=e["conf"])]
+            self._event_ch.send_nowait(lkstt.SpeechEvent(type=T[e["type"]], alternatives=alt if e["type"].endswith("TRANSCRIPT") else [],
+                                                         recognition_usage=lkstt.RecognitionUsage(audio_duration=0) if e["type"] == "RECOGNITION_USAGE" else None))
+        await draining
 
-    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
-        self.run["closes"].append({"t": round(time.monotonic() - self.run["t0"], 2), "text": new_message.text_content or ""})
-        raise StopResponse
 
-    async def stt_node(self, audio, model_settings):
-        i, n, last = 0, 0, deque(maxlen=int(EOT_MAX_SAMPLES / listen.RATE / listen.BLOCK_S))
-        async for frame in audio:
-            n += 1
-            last.append(frame)
-            while i < len(self.events) and self.events[i]["t"] <= n * listen.BLOCK_S:
-                e = self.events[i]
-                i += 1
-                if e["type"] == "END_OF_SPEECH":
-                    self.pending += 1
-                    if self.eot:
-                        pcm = np.frombuffer(b"".join(bytes(f.data) for f in last), dtype=np.int16)[-EOT_MAX_SAMPLES:]
-                        self.audio_p = asyncio.ensure_future(asyncio.to_thread(self.eot.predict, pcm))
-                elif e["type"] == "RECOGNITION_USAGE":  # ответ OpenAI на конец речи пришёл целиком: с текстом или без
-                    self.pending = max(0, self.pending - 1)
-                    continue
-                yield speech_event(e, self.clean)
-
-    async def settled(self) -> None:
-        """Ждать текст на каждый услышанный конец речи; цикл сам перезапустит вопрос, когда текст придёт."""
-        t0 = time.monotonic()
-        while self.cfg["hold"] and self.pending and time.monotonic() - t0 < 3:
+async def plugin(core: Core) -> None:
+    """Заглушка плагина и Claude, как в trace_demo.py: остановку принимает сразу, на запрос отвечает через CLAUDE_S секунд."""
+    loop = asyncio.get_running_loop()
+    while True:
+        r = core.next()
+        if not r:
             await asyncio.sleep(0.02)
+        elif r["kind"] == "cancel":
+            core.answer(r["id"])
+        elif r["kind"] in ("ask", "quick"):
+            loop.call_later(CLAUDE_S, core.answer, r["id"], "ответ")
 
 
-class TextTurn:
-    """Наш вопрос TURN как детектор цикла. Не ответил — «договорит» (max), как PAUSE_MS в listen.py."""
-
-    model, provider = listen.DECISIONS_MODEL, "openai"
-
-    def __init__(self, ear: Ear) -> None:
-        self.ear = ear
-
-    async def unlikely_threshold(self, language) -> float:
-        return 0.5
-
-    async def supports_language(self, language) -> bool:
-        return True
-
-    async def predict_end_of_turn(self, chat_ctx, *, timeout=None) -> float:
-        t0 = time.monotonic()
-        await self.ear.settled()
-        text = listen.plain(chat_ctx.items[-1].text_content or "")
-        try:
-            r = (await DEC.evaluate(input=f"user: {text}", decisions=listen.TURN, conn_options=listen.TURN_WAIT)).results["turn"]
-        except Exception:  # noqa: BLE001
-            return 0.0
-        p = (r.probabilities or {}).get(r.value, 0)
-        note("turn.check", verdict=r.value, p=round(p, 2), s=round(time.monotonic() - t0, 2), text=text[-60:])
-        if r.value == "complete":
-            return 1.0
-        if self.ear.cfg["patience"]:  # ждём сами столько, сколько ждал бы Turns; цикл после этого закрывает сразу (max мал)
-            await asyncio.sleep(max(0, t0 - 0.3 + listen.patience(r.value, p) - time.monotonic()))
-        return 0.0
-
-
-class AudioTurn:
-    """Локальная модель по звуку, вызванная в момент «речь кончилась» распознавания; ждёт запоздавший текст (hold)."""
-
-    model, provider = "turn-detector-v1-mini", "local"
-
-    def __init__(self, ear: Ear) -> None:
-        self.ear = ear
-
-    async def unlikely_threshold(self, language) -> float:
-        return self.ear.cfg["thr"]
-
-    async def supports_language(self, language) -> bool:
-        return True
-
-    async def predict_end_of_turn(self, chat_ctx, *, timeout=None) -> float:
-        await self.ear.settled()
-        p = float(await self.ear.audio_p) if self.ear.audio_p else 1.0
-        note("audio.check", p=round(p, 2))
-        return p
-
-
-def note(kind: str, **data) -> None:
-    if run := RUN.get():
-        run["checks"].append({"t": round(time.monotonic() - run.get("t0", time.monotonic()), 2), "kind": kind, **data})
-
-
-class Verdicts(logging.Handler):
-    """Ответ детектора цикла есть только в отладочном журнале библиотеки (см. livekit_loop_probe.py)."""
-
-    def emit(self, r: logging.LogRecord) -> None:
-        if r.getMessage() == "eot prediction" and getattr(r, "probability", None) is not None:
-            note("lk.eot", p=round(r.probability, 2), wait=r.endpointing_delay, by=r.trigger)
-        elif r.levelno >= logging.WARNING:
-            note("lk.warning", text=r.getMessage()[:160])
-
-
-async def run_loop(run: dict, events: list[dict], pcm: bytes, clean: bool, cfg: dict) -> None:
-    """Готовый цикл LiveKit: AgentSession без комнаты, звук — запись, распознавание — записанные события."""
+async def hear(run: dict, pcm: bytes, events: list[dict] | None, emit=lambda *_: None, log=note) -> None:
+    """Отрезок через listen.Listen и ядро. events — записанные события вместо сети распознавания; None — настоящее распознавание."""
     RUN.set(run)
-    ear = Ear(run, events, clean, cfg)
-    det = {"mini": lambda: inference.TurnDetector(version="v1-mini", unlikely_threshold=cfg["thr"]), "audio": lambda: AudioTurn(ear),
-           "text": lambda: TextTurn(ear), "vad": lambda: "vad"}[cfg["det"]]()
-    session = AgentSession(stt=Replayed(), vad=inference.VAD(model="silero", min_silence_duration=cfg["vadsil"]), user_away_timeout=None,
-                           turn_handling={"turn_detection": det, "endpointing": {"min_delay": cfg["min"], "max_delay": cfg["max"]}})
-    player = Player(pcm + bytes(TAIL_S * listen.RATE * 2), run)
-    session.input.audio = player
-    await session.start(ear)
-    while player.n < len(player.frames):
-        await asyncio.sleep(0.2)
-    await asyncio.sleep(0.5)
-    await session.aclose()
+    core = Core(emit=emit, log=log)
+    ear = listen.Listen(core)
+    if events is not None:
+        ear.ears = lambda http: Replayed(events, run)
+    tasks = [asyncio.create_task(ear.run()), asyncio.create_task(plugin(core))]
+    while ear.sound is None:
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(3)  # сокет распознавания открыт, классификатор прогрет
+    t0 = run["t0"] = time.monotonic()
+    for n, b in enumerate(frames(pcm + bytes(TAIL_S * listen.RATE * 2))):
+        ear.audio(b)
+        await asyncio.sleep(max(0, t0 + (n + 1) * listen.BLOCK_S - time.monotonic()))
+    await asyncio.sleep(CLAUDE_S)
+    for t in tasks:
+        t.cancel()
+    run["closes"] = [{"t": x["t"], "text": x["text"]} for x in run["log"] if x["kind"] == "recognized"]
+    run["sent"] = [{"id": r.id, "kind": r.kind, "state": r.state, "text": r.text} for r in core.reqs.values()]
+    run["glued"] = sum(r.state != "superseded" for r in core.reqs.values())  # сообщений осталось в разговоре с Claude
+    run.pop("t0")
 
 
-def parse(spec: str) -> tuple[str, dict]:
-    label, *pairs = spec.split()
-    cfg = {"det": "turns", "thr": 0.4, "min": 0.7, "max": 2.5, "vadsil": 0.25, "hold": 0, "patience": 0, "stt": ",".join(STTS), "files": ",".join(FILES)}
-    for k, v in (p.split("=", 1) for p in pairs):
-        cfg[k] = v if k in ("det", "stt", "files") else float(v)
-    return label, cfg
-
-
-async def cmd_run(specs: list[str]) -> None:
-    global DEC
+async def cmd_run(label: str = "listen.py") -> None:
     events = json.loads(EVENTS.read_text())
     out = json.loads(OUT.read_text()) if OUT.exists() else {"runs": {}}
-    DEC = openai.DecisionModel(model=listen.DECISIONS_MODEL, api_key=listen.env(".config/openai.env")["OPENAI_API_KEY"])
-    listen.log = note  # журнал Turns — в прогон, а не в ~/.claude/gv.log живого сервиса
-    lk = logging.getLogger("livekit.agents")
-    lk.setLevel(logging.DEBUG)
-    lk.propagate = False
-    lk.addHandler(Verdicts())
-    await DEC.evaluate(input="user: привет", decisions=listen.TURN)  # прогрев, как keep_warm
-    audio = {n: load(n) for n in FILES}
-    jobs = []
-    for spec in specs:
-        label, cfg = parse(spec)
-        out["runs"][label] = {"cfg": cfg, "data": out["runs"].get(label, {}).get("data", {})}
-        for name in cfg["files"].split(","):
-            for ears in cfg["stt"].split(","):
-                run = out["runs"][label]["data"][f"{name}/{ears}"] = {"closes": [], "checks": []}
-                ev, clean = events[f"{name}/{ears}"], ears == "openai"
-                jobs.append(run_turns(run, ev, len(audio[name]) / 2 / listen.RATE, clean) if cfg["det"] == "turns"
-                            else run_loop(run, ev, audio[name], clean, cfg))
-    print("прогонов разом:", len(jobs))
-    for r in await asyncio.gather(*jobs, return_exceptions=True):
-        if isinstance(r, Exception):
-            print("прогон упал:", type(r).__name__, r)
-    for label in (parse(s)[0] for s in specs):
-        for run in out["runs"][label]["data"].values():
-            run.pop("t0", None)
-            run.pop("glued", None)
-    OUT.write_text(json.dumps(out, ensure_ascii=False, indent=1))
+    listen.log, listen.trace, listen.emit, listen.sd.RawInputStream = note, note, lambda *_: None, NoMic
+    tmp, count = Path(tempfile.mkdtemp(prefix="gv-bench-")), iter(range(10**6))
+    listen.trace_open = lambda: tmp / f"{next(count)}.jsonl"  # звук прогонов — во временную папку, мимо ~/.claude/gv-trace
+    data = out["runs"].setdefault(label, {"cfg": {"det": "listen.py"}, "data": {}})["data"]
+    for ears in STTS:  # слух читает выбор распознавания при запуске: по одному за проход
+        listen.EARS = ears
+        runs = {n: {"log": []} for n in FILES}
+        got = await asyncio.gather(*(hear(runs[n], load(n), events[f"{n}/{ears}"]) for n in FILES), return_exceptions=True)
+        for n, r in zip(FILES, got):
+            data[f"{n}/{ears}"] = runs[n]
+            print(ears, n, "упал: " + repr(r) if isinstance(r, Exception) else f"реплик {len(runs[n]['closes'])}, сообщений {runs[n]['glued']}")
+        OUT.write_text(json.dumps(out, ensure_ascii=False, indent=1))
 
 
-# ── report: правда, три числа, склейка ──────────────────────────────────────────
+async def cmd_live(name: str, silence: int) -> None:
+    import journal
+    journal.TRACES = Path(tempfile.mkdtemp(prefix="gv-live-"))  # запись запуска и журнал — настоящие, но не живого сервиса
+    journal.LOG = journal.TRACES / "gv.log"
+    listen.sd.RawInputStream = NoMic
+    run = {"log": []}
+
+    def log(kind: str, **data) -> None:
+        note(kind, **data)
+        journal.log(kind, **data)
+    listen.log = log
+    await hear(run, bytes(silence * listen.RATE * 2) + load(name), None, emit=journal.emit, log=log)
+    rows = [json.loads(l) for l in journal._state["trace"].read_text().splitlines()]
+    for x in run["log"]:
+        if x["kind"] in ("recognized", "turn.check", "route", "route.early", "cut", "ask", "quick", "recognize.error", "route.error"):
+            print(f"{x['t']:7.2f}  {x['kind']:<12} " + " ".join(f"{k}={str(v)[:150]}" for k, v in x.items() if k not in ("t", "kind")))
+    print(f"\nраспознавание {listen.EARS}; запись запуска: {journal._state['trace']}; события: {sorted({r['ev'] for r in rows})}")
+    if gates := [r["s"] for r in rows if r["ev"] == "gate.sent"]:
+        print(f"в распознавание ушло {sum(gates):.1f} с звука из {silence + FILES[name][2] + TAIL_S} с, отрезков речи {len(gates)}")
+    print("сообщений в разговоре с Claude:", run["glued"])
+    for r in run["sent"]:
+        print(f"  №{r['id']} {r['kind']} ({r['state']}): {r['text']}")
+
+
+# ── report: правда и три числа ──────────────────────────────────────────
 def score(truth: list[dict], closes: list[dict]) -> dict:
     """Каждое закрытие относится к последней паузе, что началась до него: зря закрытая посреди мысли фраза часто закрывается
     уже под следующие слова."""
@@ -421,43 +319,13 @@ def score(truth: list[dict], closes: list[dict]) -> dict:
             "mid": len(truth) - len(ends), "false": sum(i in hit for i in range(len(truth)) if not truth[i]["done"]), "messages": len(closes)}
 
 
-async def glue(events: list[dict], closes: list[dict]) -> int:
-    """Сколько сообщений останется после нашего вопроса QUESTION: одинаково для обеих систем, пауза — как её считает Turns
-    (от закрытия прошлой реплики до первого текста этой)."""
-    texts = [e["t"] for e in events if e["type"] in ("INTERIM_TRANSCRIPT", "FINAL_TRANSCRIPT") and e["text"].strip()]
-    last, n = None, 0
-    for k, c in enumerate(closes):
-        if not c["text"].strip():
-            continue
-        if last is not None:
-            prev = closes[k - 1]["t"]
-            first = next((t for t in texts if t > prev - 1.5), c["t"])  # текст, пришедший чуть раньше закрытия, — уже этой реплики
-            try:
-                r = await DEC.evaluate(input=listen.said(listen.plain(c["text"]), last, round(max(0, first - prev), 1), False),
-                                       decisions=listen.QUESTION, conn_options=listen.ROUTE_WAIT)
-                p = r.results["continues"].value
-            except Exception:  # noqa: BLE001
-                p = 0
-            c["continues"] = round(p, 2)
-            if p >= listen.SURE:
-                last.text += " " + listen.plain(c["text"])
-                continue
-        last, n = SimpleNamespace(text=listen.plain(c["text"]), state="sent", answer="", id=1), n + 1
-    return n
-
-
 async def cmd_report() -> None:
-    global DEC
-    DEC = openai.DecisionModel(model=listen.DECISIONS_MODEL, api_key=listen.env(".config/openai.env")["OPENAI_API_KEY"])
-    events, out = json.loads(EVENTS.read_text()), json.loads(OUT.read_text())
+    out = json.loads(OUT.read_text())
     truth = out["truth"] = {n: pauses(load(n)) for n in FILES}
     for n, ps in truth.items():
         print(f"{n}: пауз {len(ps)}, из них договорил {sum(p['done'] for p in ps)}")
-    todo = [(key, run) for r in out["runs"].values() for key, run in r["data"].items() if "glued" not in run]
-    for (key, run), n in zip(todo, await asyncio.gather(*(glue(events[key], run["closes"]) for key, run in todo))):
-        run["glued"] = n
     table = out["table"] = {}
-    print(f"\n{'система':<22}{'слух':<9}{'отрезки':<9}{'концы: закрыто':<16}{'через, с (медиана / худшее)':<29}{'зря посреди мысли':<19}{'сообщений → после склейки / ждали'}")
+    print(f"\n{'система':<22}{'слух':<9}{'отрезки':<9}{'концы: закрыто':<16}{'через, с (медиана / худшее)':<29}{'зря посреди мысли':<19}{'реплик → сообщений / ждали'}")
     for label, r in out["runs"].items():
         for ears in STTS:
             for part, names in (("подбор", [n for n in FILES if n not in HOLDOUT]), ("отлож.", sorted(HOLDOUT))):
@@ -481,5 +349,8 @@ async def cmd_report() -> None:
 
 
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "report"
-    asyncio.run({"record": cmd_record, "report": cmd_report}[cmd]() if cmd != "run" else cmd_run(sys.argv[2:]))
+    cmd, args = (sys.argv[1] if len(sys.argv) > 1 else "report"), sys.argv[2:]
+    silence = int(args.pop(args.index("--silence") + 1)) if "--silence" in args else 0
+    args = [a for a in args if a != "--silence"]
+    asyncio.run({"record": cmd_record, "report": cmd_report, "run": lambda: cmd_run(*args[:1]),
+                 "live": lambda: cmd_live(args[0] if args else "минута", silence)}[cmd]())
