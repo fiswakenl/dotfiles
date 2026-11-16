@@ -21,6 +21,9 @@ services:
   tunnel-kbju:
     run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ConnectTimeout=10 -R 127.0.0.1:8782:127.0.0.1:2256 dnk
     always: true
+  tunnel-flow:   # devtools суфлёра (Vite :5181) → dnk 127.0.0.1:8783 → flow-relay → https://flow.devml4dbs.duckdns.org
+    run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ConnectTimeout=10 -R 127.0.0.1:8783:127.0.0.1:5181 dnk
+    always: true
   tunnel-embed:
     run: exec ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -o ConnectTimeout=10 -R 127.0.0.1:8771:127.0.0.1:8771 dnk
     always: true
