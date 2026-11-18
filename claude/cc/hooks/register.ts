@@ -38,13 +38,15 @@ export function register(on, options) {
   on("prompt.submit", async ($, e, next) => {
     if (!e.text.trim() || !TYPED.includes(e.origin.kind)) return next(e);
     if (options.mode !== "auto") return next(e);
+    // Команду или путь в начале не трогаем: чистильщик переписывает пути, а текст с «/» в начале
+    // движок от плагина заново не отправит — сырой уже уронен, и реплика пропала бы.
+    if (e.text.trimStart().startsWith("/")) return next(e);
 
-    // Поле после Enter пустое — крутим в нём, пока думает чистильщик, и убираем
-    // за собой. Начал печатать следующий промпт — не мешаем.
+    // Пока думает чистильщик — крутилка в поле, потом убираем за собой. Начал печатать следующий промпт — не мешаем.
     const cleaning = clean($, e.text, options);
-    const untouched = await spin($, cleaning);
+    await spin($, cleaning, e.text);
     const text = await cleaning;
-    if (untouched) await $.prompt.fill({ text: "" });
+    await clearOurs($, e.text);
     const question = text ? parseCheck(text) : null;
     if (question) return options.check === "on" ? verify($, e, next, question) : next(e);
     if (!text || text === e.text) return next(e);
@@ -53,9 +55,10 @@ export function register(on, options) {
     // resend: remote control рисует то, что отправил сам, и подмену не видит.
     // Сырой промпт роняем, чистый отправляем от плагина. Сразу из хука submit не
     // проходит — движок ещё занят этим промптом, поэтому чуть позже.
-    $.clock.after(300, () => {
-      $.prompt.submit({ text, asUser: true })
-        .catch((err) => log($, { resubmit: "failed", error: String(err) }));
+    // Уроненный промпт движок может вернуть в поле — убираем и его, иначе он висит над ответом.
+    $.clock.after(300, async () => {
+      await clearOurs($, e.text);
+      resubmit($, text);
     });
     return { drop: "причёсано, отправлено заново" };
   });
@@ -70,8 +73,7 @@ export function register(on, options) {
     await log($, { check: e.reason, agentId: e.agentId, found: e.answer.slice(0, 1000) });
     const text = e.reason === "answer" ? await clean($, raw, options, e.answer) : null;
     const final = text && !parseCheck(text) ? text : raw;
-    $.prompt.submit({ text: final, asUser: true })
-      .catch((err) => log($, { resubmit: "failed", error: String(err) }));
+    resubmit($, final);
     return next(e);
   });
 
@@ -109,29 +111,51 @@ async function verify($, e, next, question: string) {
   return { drop: "cc: проверяю, отправлю после" };
 }
 
+// Сырой промпт уже уронен — отправляем чистый от плагина. Движок отказал — текст обратно
+// в поле с подсказкой: реплика не должна пропасть ни при каком отказе.
+function resubmit($, text: string): void {
+  $.prompt.submit({ text, asUser: true }).catch(async (err) => {
+    await log($, { resubmit: "failed", error: String(err) });
+    await $.prompt.fill({ text }).catch(() => {});
+    $.ui.status("cc: не отправилось — текст в поле, нажми Enter");
+    $.clock.after(8000, () => $.ui.status(undefined));
+  });
+}
+
 // Кнопка: черновик из поля — чистка — обратно в поле. Ничего не отправляет.
 async function rephrase($, options): Promise<void> {
   const { text } = await $.prompt.read();
   if (!text.trim()) return;
   const cleaning = clean($, text, options);
-  const untouched = await spin($, cleaning);
+  const untouched = await spin($, cleaning, text);
   const cleaned = await cleaning;
   const fixed = cleaned && !parseCheck(cleaned) ? cleaned : null;
-  if (untouched) await $.prompt.fill({ text: fixed || text });
+  const now = await field($);
+  if (untouched || isSpin(now) || now === text) await $.prompt.fill({ text: fixed || text });
 }
 
-// Крутим, пока не доедет чистка. false — поле тронули руками.
-async function spin($, until: Promise<unknown>): Promise<boolean> {
+const isSpin = (s: string) => s !== "" && [...s].every((c) => FRAMES.includes(c));
+const field = async ($): Promise<string> => (await $.prompt.read().catch(() => ({ text: "" }))).text;
+
+// Крутим, пока не доедет чистка. false — в поле появилось чужое: начал печатать — не мешаем.
+// Своё в поле — пусто, крутилка или текст, с которого начали (поле обновляется не мгновенно).
+async function spin($, until: Promise<unknown>, start = ""): Promise<boolean> {
   let done = false;
   until.then(() => (done = true), () => (done = true));
   for (let i = 0; !done; i++) {
-    const shown = Array.from({ length: SPINNERS },
-      (_, n) => FRAMES[(i + n * 3) % FRAMES.length]).join("");
-    await $.prompt.fill({ text: shown });
-    if ((await $.prompt.read()).text !== shown) return false;
+    const now = await field($);
+    if (now !== "" && now !== start && !isSpin(now)) return false;
+    await $.prompt.fill({ text: Array.from({ length: SPINNERS },
+      (_, n) => FRAMES[(i + n * 3) % FRAMES.length]).join("") });
     await new Promise((resolve) => setTimeout(resolve, TICK_MS));
   }
   return true;
+}
+
+// Убираем из поля только своё — крутилку или уроненный промпт; набранное руками не трогаем.
+async function clearOurs($, raw: string): Promise<void> {
+  const now = await field($);
+  if (isSpin(now) || now === raw) await $.prompt.fill({ text: "" }).catch(() => {});
 }
 
 // Два пути, выбор — options.context.
